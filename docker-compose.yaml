@@ -8,6 +8,7 @@ services:
     command: master
     environment:
       SPARK_PUBLIC_DNS: localhost
+      SPARK_HISTORY_OPTS: "-Dspark.history.ui.bindAddress=0.0.0.0 -Dspark.history.fs.logDirectory=file:/tmp/spark-events"
     ports:
       - 4040:4040
       - 8080:8080
@@ -38,6 +39,16 @@ services:
       - ./web-app/log4j2-debug.properties:/spark/conf/log4j2-debug.properties
     depends_on:
       - spark-master
+    networks:
+      - scylla-migrator-spark-network
+
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: dynamodb-local
+    command: "-jar DynamoDBLocal.jar -sharedDb -inMemory"
+    working_dir: /home/dynamodblocal
+    ports:
+      - "8001:8000"
     networks:
       - scylla-migrator-spark-network
 

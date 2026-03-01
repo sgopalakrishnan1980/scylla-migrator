@@ -415,11 +415,11 @@
       <button class="btn btn-secondary" onclick="validateConfig()">Validate Config</button>
       <small style="color:#666; display:block; margin-top:0.25rem;">Validates config file structure (migrator --validate-config) and optionally runs rudimentary endpoint checks. Save Config first. This is not Spark-based data validation.</small>
       {% endif %}
+      <input type="file" id="configUpload" accept=".yaml,.yml" style="display:none" onchange="handleConfigUpload(event)">
+      <button class="btn btn-secondary" onclick="document.getElementById('configUpload').click()">Upload Config</button>
       <button class="btn" onclick="saveConfig()">Save Config</button>
-      {% if standalone_mode %}
       <button class="btn btn-secondary" onclick="downloadConfig()">Download Config</button>
-      <small style="color:#666; display:block; margin-top:0.25rem;">Save writes to ./config-output/config.yaml. Download saves to your machine.</small>
-      {% endif %}
+      <small style="color:#666; display:block; margin-top:0.25rem;">Upload loads a config file into the form. Save writes to config file. Download saves current config to your machine.</small>
     </p>
     <div id="verifyResult"></div>
     <div id="accessResult"></div>
@@ -858,6 +858,52 @@
       URL.revokeObjectURL(a.href);
       const el = document.getElementById('saveResult');
       el.innerHTML = '<span class="success">Config downloaded as config.yaml</span>';
+    }
+
+    async function handleConfigUpload(ev) {
+      const file = ev.target?.files?.[0];
+      if (!file) return;
+      const el = document.getElementById('saveResult');
+      el.innerHTML = 'Loading...';
+      try {
+        const content = await file.text();
+        const r = await fetch('/config/parse', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content })
+        });
+        const d = await r.json();
+        if (d.success && d.form) {
+          loadFromParsedConfig(d.form);
+          onSourceTargetChange();
+          el.innerHTML = '<span class="success">Config loaded from ' + file.name + '. Form updated.</span>';
+        } else {
+          el.innerHTML = '<span class="error">' + (d.error || 'Failed to parse config') + '</span>';
+        }
+      } catch (e) {
+        el.innerHTML = '<span class="error">' + e.message + '</span>';
+      }
+      ev.target.value = '';
+    }
+
+    function loadFromParsedConfig(form) {
+      for (const [key, value] of Object.entries(form)) {
+        if (value === undefined || value === null) continue;
+        const el = document.getElementById(key);
+        if (el) {
+          if (el.type === 'radio') {
+            const match = document.querySelector(`input[name="${el.name}"][value="${value}"]`);
+            if (match) match.checked = true;
+          } else if (el.type === 'checkbox') {
+            el.checked = value === true || value === 'true';
+          } else {
+            el.value = value;
+          }
+        } else {
+          const radio = document.querySelector(`input[name="${key}"][value="${value}"]`);
+          if (radio) radio.checked = true;
+        }
+      }
     }
 
     async function submitJob() {

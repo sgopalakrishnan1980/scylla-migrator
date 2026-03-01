@@ -11,6 +11,7 @@ services:
     command: master
     environment:
       SPARK_PUBLIC_DNS: ${EXTERNAL_HOST:-localhost}
+      SPARK_HISTORY_OPTS: "-Dspark.history.ui.bindAddress=0.0.0.0 -Dspark.history.fs.logDirectory=file:/tmp/spark-events"
     ports:
       - 4040:4040
       - 8080:8080
@@ -22,6 +23,16 @@ services:
       - ./parquet-data:/parquet-data
       - ./:/app
       - ./web-app/log4j2-debug.properties:/spark/conf/log4j2-debug.properties
+    networks:
+      - scylla-migrator-spark-network
+
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: dynamodb-local
+    command: "-jar DynamoDBLocal.jar -sharedDb -inMemory"
+    working_dir: /home/dynamodblocal
+    ports:
+      - "8001:8000"
     networks:
       - scylla-migrator-spark-network
 
@@ -52,6 +63,7 @@ services:
     environment:
       SPARK_MASTER_HOST: spark-master
       EXTERNAL_HOST: ${EXTERNAL_HOST:-}
+      SPARK_NETWORK_FILTER: scylla-migrator
       MIGRATOR_CONFIG_PATH: /app/config.yaml
       USE_DOCKER_EXEC: "1"
       FLASK_APP: app.py

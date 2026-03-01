@@ -161,6 +161,13 @@ Resources:
             echo "Starting Docker Compose (Spark + web app only)..."
             docker compose -f docker-compose.ec2.yml up -d
 
+            echo "Waiting 2 minutes for services to stabilize..."
+            sleep 120
+
+            if [ -f "$DEPLOY_DIR/scripts/post-deploy-wait.sh" ]; then
+              bash "$DEPLOY_DIR/scripts/post-deploy-wait.sh" || true
+            fi
+
             echo "=== Bootstrap complete ==="
       BlockDeviceMappings:
         - DeviceName: /dev/xvda

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Scylla Migrator sidecar web app - config, monitoring, job management."""
 
+import json
 import logging
 import os
 import socket
@@ -10,6 +11,11 @@ from pathlib import Path
 import yaml
 import requests
 from flask import Flask, render_template, request, jsonify, redirect, url_for
+
+try:
+    import docker as docker_sdk
+except ImportError:
+    docker_sdk = None
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024  # 1MB max config
@@ -25,15 +31,154 @@ SPARK_HISTORY_PORT = 18080
 SPARK_MASTER_PORT = 8080
 SPARK_WORKER_PORT = 8081
 STANDALONE_MODE = os.environ.get("STANDALONE_MODE", "").lower() in ("1", "true", "yes")
+SPARK_NETWORK_FILTER = os.environ.get("SPARK_NETWORK_FILTER", "scylla-migrator")
+
+_ui_host_cache = None
+_docker_client = None
+
+
+def _get_docker_client():
+    """Get Docker client via SDK (uses socket). Falls back to None if SDK unavailable."""
+    global _docker_client
+    if _docker_client is not None:
+        return _docker_client
+    if not docker_sdk or not Path("/var/run/docker.sock").exists():
+        return None
+    try:
+        _docker_client = docker_sdk.DockerClient(base_url="unix:///var/run/docker.sock")
+        _docker_client.ping()
+        return _docker_client
+    except Exception:
+        _docker_client = None
+        return None
+
+
+def _docker_via_cli(container_name: str, cmd: list, detach: bool = False):
+    """Fallback: run docker exec via subprocess when SDK unavailable."""
+    full_cmd = ["docker", "exec"]
+    if detach:
+        full_cmd.append("-d")
+    full_cmd.extend([container_name] + cmd)
+    try:
+        if detach:
+            proc = subprocess.Popen(full_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return (0, None, None)
+        result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=120)
+        return (result.returncode, result.stdout or "", result.stderr or "")
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def _docker_exec(container_name: str, cmd: list, detach: bool = False):
+    """Run command in container. Uses SDK first, falls back to docker CLI."""
+    client = _get_docker_client()
+    if client:
+        try:
+            container = client.containers.get(container_name)
+            if detach:
+                container.exec_run(cmd, detach=True)
+                return (0, None, None)
+            result = container.exec_run(cmd, demux=True)
+            out, err = result.output or (None, None)
+            stdout = (out or b"").decode("utf-8", errors="replace") if out else ""
+            stderr = (err or b"").decode("utf-8", errors="replace") if err else ""
+            return (result.exit_code or 0, stdout, stderr)
+        except Exception:
+            pass
+    return _docker_via_cli(container_name, cmd, detach)
+
+
+def _docker_logs(container_name: str, tail: int = 100) -> str | None:
+    """Get last N lines of container logs. Uses SDK first, falls back to docker CLI."""
+    client = _get_docker_client()
+    if client:
+        try:
+            container = client.containers.get(container_name)
+            logs = container.logs(tail=tail, stdout=True, stderr=True)
+            return logs.decode("utf-8", errors="replace") if logs else ""
+        except Exception:
+            pass
+    try:
+        result = subprocess.run(
+            ["docker", "logs", "--tail", str(tail), container_name],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        out = (result.stdout or "") + (result.stderr or "")
+        return out if out else None
+    except Exception:
+        return None
+
+
+def _docker_network_gateway():
+    """Run docker network inspect to get gateway (host IP on bridge) for UI links."""
+    client = _get_docker_client()
+    if client:
+        try:
+            for net in client.networks.list():
+                if SPARK_NETWORK_FILTER in (net.name or ""):
+                    net.reload()
+                    for cfg in (net.attrs.get("IPAM") or {}).get("Config") or []:
+                        gw = cfg.get("Gateway")
+                        if gw:
+                            return gw
+        except Exception:
+            pass
+    try:
+        out = subprocess.run(
+            ["docker", "network", "ls", "--format", "{{.Name}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        for net in (out.stdout or "").splitlines():
+            net = net.strip()
+            if SPARK_NETWORK_FILTER not in net:
+                continue
+            insp = subprocess.run(
+                ["docker", "network", "inspect", net, "--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if insp.returncode == 0 and insp.stdout and insp.stdout.strip():
+                return insp.stdout.strip()
+    except Exception:
+        pass
+    return None
 
 
 def _ui_base_host():
-    """Host for browser-facing URLs (Spark UIs). Use EXTERNAL_HOST if set, else request host."""
+    """Host for browser-facing URLs (Spark UIs).
+    1. EXTERNAL_HOST (EC2 public IP) if set
+    2. Gateway from docker network inspect (host on bridge, for local Docker)
+    3. Request host (from Host header)
+    4. localhost
+    """
+    global _ui_host_cache
+    if _ui_host_cache is not None:
+        return _ui_host_cache
+
     ext = os.environ.get("EXTERNAL_HOST", "").strip()
     if ext:
+        _ui_host_cache = ext
         return ext
+
+    gw = _docker_network_gateway()
+    if gw:
+        _ui_host_cache = gw
+        return gw
+
     if request and request.host:
-        return request.host.split(":")[0]
+        h = request.host.split(":")[0]
+        if h:
+            _ui_host_cache = h
+            return h
+
+    _ui_host_cache = "localhost"
     return "localhost"
 
 
@@ -63,6 +208,133 @@ def get_config():
         return jsonify({"success": False, "error": f"Config file not found: {path}"}), 404
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/config/parse", methods=["POST"])
+def parse_config():
+    """Parse uploaded YAML config and return form-ready structure for reload."""
+    data = request.get_json() or {}
+    content = data.get("content", "")
+
+    if not content or not content.strip():
+        return jsonify({"success": False, "error": "No config content"}), 400
+
+    try:
+        cfg = yaml.safe_load(content)
+    except yaml.YAMLError as e:
+        return jsonify({"success": False, "error": f"Invalid YAML: {e}"}), 400
+
+    if not isinstance(cfg, dict):
+        return jsonify({"success": False, "error": "Config must be a YAML object"}), 400
+
+    form = {}
+    source = cfg.get("source") or {}
+    target = cfg.get("target") or {}
+    savepoints = cfg.get("savepoints") or {}
+
+    src_type = source.get("type", "cassandra")
+    tgt_type = target.get("type", "scylla")
+    if src_type == "scylla":
+        src_type = "cassandra"
+    if tgt_type == "dynamodb" and target.get("endpoint"):
+        tgt_type = "alternator"
+
+    form["sourceType"] = src_type
+    form["targetType"] = tgt_type
+
+    if src_type == "cassandra":
+        form["src_host"] = source.get("host", "cassandra-host")
+        form["src_port"] = source.get("port", 9042)
+        form["src_keyspace"] = source.get("keyspace", "keyspace")
+        form["src_table"] = source.get("table", "table")
+        form["src_consistency"] = source.get("consistencyLevel", "LOCAL_QUORUM")
+        form["src_preserveTimestamps"] = str(source.get("preserveTimestamps", False)).lower()
+        creds = source.get("credentials") or {}
+        form["src_username"] = creds.get("username", "")
+        form["src_password"] = creds.get("password", "")
+    elif src_type == "parquet":
+        form["parquet_path"] = source.get("path", "")
+        form["parquet_region"] = source.get("region", "")
+        creds = source.get("credentials") or {}
+        form["parquet_accessKey"] = creds.get("accessKey", "")
+        form["parquet_secretKey"] = creds.get("secretKey", "")
+        assume = creds.get("assumeRole") or {}
+        form["parquet_assumeRoleArn"] = assume.get("arn", "")
+        form["parquet_sessionName"] = assume.get("sessionName", "")
+    elif src_type == "dynamodb":
+        ep = source.get("endpoint") or {}
+        creds = source.get("credentials") or {}
+        assume = creds.get("assumeRole") or {}
+        if ep:
+            form["sourceType"] = "alternator"
+            form["alt_src_endpoint_host"] = ep.get("host", "http://localhost") + (f":{ep.get('port', 8000)}" if ep.get("port") else "")
+            form["alt_src_table"] = source.get("table", "")
+            form["alt_src_accessKey"] = creds.get("accessKey", "")
+            form["alt_src_secretKey"] = creds.get("secretKey", "")
+            form["alt_src_assumeRoleArn"] = assume.get("arn", "")
+            form["alt_src_sessionName"] = assume.get("sessionName", "")
+        else:
+            form["ddb_src_table"] = source.get("table", "")
+            form["ddb_src_region"] = source.get("region", "us-east-1")
+            form["ddb_src_accessKey"] = creds.get("accessKey", "")
+            form["ddb_src_secretKey"] = creds.get("secretKey", "")
+            form["ddb_src_assumeRoleArn"] = assume.get("arn", "")
+            form["ddb_src_sessionName"] = assume.get("sessionName", "")
+    elif src_type == "dynamodb-s3-export":
+        form["s3_bucket"] = source.get("bucket", "")
+        form["s3_manifest"] = source.get("manifestKey", "")
+        form["s3_region"] = source.get("region", "")
+        td = source.get("tableDescription") or {}
+        ad = (td.get("attributeDefinitions") or [{}])[0] or {}
+        form["s3_pk_name"] = ad.get("name", "id")
+        form["s3_pk_type"] = ad.get("type", "S")
+        creds = source.get("credentials") or {}
+        form["s3_accessKey"] = creds.get("accessKey", "")
+        form["s3_secretKey"] = creds.get("secretKey", "")
+        assume = creds.get("assumeRole") or {}
+        form["s3_assumeRoleArn"] = assume.get("arn", "")
+        form["s3_sessionName"] = assume.get("sessionName", "")
+
+    if tgt_type == "scylla":
+        form["tgt_host"] = target.get("host", "scylla-host")
+        form["tgt_port"] = target.get("port", 9042)
+        form["tgt_keyspace"] = target.get("keyspace", "keyspace")
+        form["tgt_table"] = target.get("table", "table")
+        form["tgt_consistency"] = target.get("consistencyLevel", "LOCAL_QUORUM")
+        form["tgt_stripZeros"] = str(target.get("stripTrailingZerosForDecimals", False)).lower()
+        creds = target.get("credentials") or {}
+        form["tgt_username"] = creds.get("username", "")
+        form["tgt_password"] = creds.get("password", "")
+    elif tgt_type == "dynamodb":
+        ep = target.get("endpoint") or {}
+        creds = target.get("credentials") or {}
+        if ep:
+            form["targetType"] = "alternator"
+            form["alt_tgt_endpoint_host"] = ep.get("host", "http://localhost") + (f":{ep.get('port', 8000)}" if ep.get("port") else "")
+            form["alt_tgt_table"] = target.get("table", "")
+            form["alt_tgt_accessKey"] = creds.get("accessKey", "")
+            form["alt_tgt_secretKey"] = creds.get("secretKey", "")
+        else:
+            form["ddb_tgt_table"] = target.get("table", "")
+            form["ddb_tgt_region"] = target.get("region", "us-east-1")
+            form["ddb_tgt_accessKey"] = creds.get("accessKey", "")
+            form["ddb_tgt_secretKey"] = creds.get("secretKey", "")
+        form["tgt_removeConsumedCapacity"] = str(target.get("removeConsumedCapacity", True)).lower()
+        form["alt_tgt_billingMode"] = target.get("billingMode", "PAY_PER_REQUEST")
+    elif tgt_type == "alternator":
+        ep = target.get("endpoint") or {}
+        form["alt_tgt_endpoint_host"] = ep.get("host", "http://localhost") + (f":{ep.get('port', 8000)}" if ep.get("port") else "")
+        form["alt_tgt_table"] = target.get("table", "")
+        creds = target.get("credentials") or {}
+        form["alt_tgt_accessKey"] = creds.get("accessKey", "")
+        form["alt_tgt_secretKey"] = creds.get("secretKey", "")
+        form["tgt_removeConsumedCapacity"] = str(target.get("removeConsumedCapacity", True)).lower()
+        form["alt_tgt_billingMode"] = target.get("billingMode", "PAY_PER_REQUEST")
+
+    form["savepoints_path"] = savepoints.get("path", "/app/savepoints")
+    form["savepoints_interval"] = savepoints.get("intervalSeconds", 300)
+
+    return jsonify({"success": True, "content": content, "form": form})
 
 
 @app.route("/config/verify-whitespace", methods=["POST"])
@@ -699,13 +971,17 @@ def _run_spark_submit(cmd_extra: list, config_path: str) -> tuple[int, str, str]
         str(jar_files[0]),
     ] + cmd_extra
 
-    # Prefer docker exec if we're in web-app container and spark-master has spark-submit
+    # Use docker exec when in containerized setup (SDK or CLI)
     if os.environ.get("USE_DOCKER_EXEC") and Path("/var/run/docker.sock").exists():
-        full_cmd = ["docker", "exec", "spark-master"] + base_cmd
-    else:
-        full_cmd = base_cmd
+        res = _docker_exec("spark-master", base_cmd, detach=False)
+        if res is not None:
+            return res
+        raise RuntimeError(
+            "Unable to run spark-submit in spark-master container. "
+            "Ensure docker socket is mounted and docker CLI is available."
+        )
 
-    result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(base_cmd, capture_output=True, text=True, timeout=120)
     return result.returncode, result.stdout, result.stderr
 
 
@@ -897,6 +1173,7 @@ def submit_job():
         "--class", "com.scylladb.migrator.Migrator",
         "--master", f"spark://{SPARK_MASTER_HOST}:7077",
         "--conf", "spark.eventLog.enabled=true",
+        "--conf", "spark.eventLog.dir=file:/tmp/spark-events",
         "--conf", f"spark.scylla.config={config_path}",
     ]
     if debug:
@@ -906,8 +1183,15 @@ def submit_job():
             "--conf", f"spark.executor.extraJavaOptions={log4j_conf}",
         ])
     base_cmd.append(str(jar_files[0]))
+
     if os.environ.get("USE_DOCKER_EXEC") and Path("/var/run/docker.sock").exists():
-        base_cmd = ["docker", "exec", "-d", "spark-master"] + base_cmd
+        res = _docker_exec("spark-master", base_cmd, detach=True)
+        if res is not None:
+            return jsonify({"success": True, "message": "Job submitted", "pid": 0})
+        return jsonify({
+            "success": False,
+            "error": "Unable to run spark-submit in spark-master. Ensure docker socket is mounted and docker CLI is available.",
+        }), 500
 
     try:
         proc = subprocess.Popen(
@@ -917,6 +1201,70 @@ def submit_job():
             start_new_session=True,
         )
         return jsonify({"success": True, "message": "Job submitted", "pid": proc.pid})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/network-mapping")
+def network_mapping():
+    """Return container→IP mapping from docker network inspect."""
+    result = {"networks": {}, "ui_base_host": _ui_base_host()}
+    client = _get_docker_client()
+    if client:
+        try:
+            for net in client.networks.list():
+                if SPARK_NETWORK_FILTER not in (net.name or ""):
+                    continue
+                net.reload()
+                containers = {}
+                for cid, cinfo in (net.attrs.get("Containers") or {}).items():
+                    name = cinfo.get("Name", cid[:12])
+                    addr = (cinfo.get("IPv4Address") or "").split("/")[0]
+                    if addr:
+                        containers[name] = addr
+                gw = None
+                for cfg in (net.attrs.get("IPAM") or {}).get("Config") or []:
+                    if cfg.get("Gateway"):
+                        gw = cfg["Gateway"]
+                        break
+                result["networks"][net.name or net.id] = {"containers": containers, "gateway": gw}
+            return jsonify({"success": True, **result})
+        except Exception:
+            pass
+    try:
+        out = subprocess.run(
+            ["docker", "network", "ls", "--format", "{{.Name}}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        for net in (out.stdout or "").splitlines():
+            net = net.strip()
+            if SPARK_NETWORK_FILTER not in net:
+                continue
+            insp = subprocess.run(
+                ["docker", "network", "inspect", net],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if insp.returncode != 0 or not insp.stdout:
+                continue
+            data = json.loads(insp.stdout)
+            for item in data if isinstance(data, list) else [data]:
+                containers = {}
+                for cid, cinfo in (item.get("Containers") or {}).items():
+                    name = cinfo.get("Name", cid[:12])
+                    addr = (cinfo.get("IPv4Address") or "").split("/")[0]
+                    if addr:
+                        containers[name] = addr
+                gw = None
+                for cfg in (item.get("IPAM") or {}).get("Config") or []:
+                    if cfg.get("Gateway"):
+                        gw = cfg["Gateway"]
+                        break
+                result["networks"][net] = {"containers": containers, "gateway": gw}
+        return jsonify({"success": True, **result})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
@@ -936,20 +1284,9 @@ def jobs_status():
 def worker_logs():
     """Stream worker logs - returns last N lines via docker logs or file tail."""
     lines = int(request.args.get("lines", 100))
-    # Try docker logs first when in containerized setup
-    if Path("/var/run/docker.sock").exists():
-        try:
-            result = subprocess.run(
-                ["docker", "logs", "--tail", str(lines), "spark-worker"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            content = (result.stdout or "") + (result.stderr or "")
-            if content:
-                return jsonify({"success": True, "content": content, "source": "docker logs"})
-        except Exception:
-            pass
+    content = _docker_logs("spark-worker", tail=lines)
+    if content:
+        return jsonify({"success": True, "content": content, "source": "docker logs"})
     # Fallback: look for log files (when web-app runs inside spark-master)
     import glob
     for pattern in ["/tmp/spark-*/logs/*.out", "/spark/logs/*.out"]:

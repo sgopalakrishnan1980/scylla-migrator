@@ -1,0 +1,311 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Scylla Migrator - EC2 without Docker. Amazon Linux, Spark binaries, Flask web app.
+# Deploys a single EC2 instance with SSM, Spark 3.5.8 (master+worker), and the Python Flask UI.
+# No Docker - native Spark and Flask on the host.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC where the migrator instance will be deployed
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet in the chosen VPC
+  VpcCidrBlock:
+    Type: String
+    Description: CIDR block of the VPC (e.g. 10.0.0.0/16)
+    Default: '10.0.0.0/16'
+    AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: SSH key pair for EC2 access
+  InstanceType:
+    Type: String
+    Default: m6i.4xlarge
+    Description: EC2 instance type
+    AllowedValues:
+      - m6i.4xlarge
+      - m6i.6xlarge
+      - c6i.4xlarge
+      - c6i.6xlarge
+  AllowedCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR allowed for web app and Spark UIs
+  RepoUrl:
+    Type: String
+    Default: https://github.com/scylladb/scylla-migrator.git
+    Description: Git repo URL for scylla-migrator
+  PrebuiltJarBucket:
+    Type: String
+    Default: ''
+    Description: '(Optional) S3 bucket for pre-built migrator JAR. Leave empty to build from source.'
+  PrebuiltJarKey:
+    Type: String
+    Default: ''
+    Description: '(Optional) S3 key for pre-built migrator JAR (e.g. migrator/migrator-assembly.jar).'
+
+Conditions:
+  UsePrebuiltJar: !And [!Not [!Equals [!Ref PrebuiltJarBucket, '']], !Not [!Equals [!Ref PrebuiltJarKey, '']]]
+
+Resources:
+  MigratorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'scylla-migrator-no-docker-${AWS::StackName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  MigratorInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub 'scylla-migrator-no-docker-${AWS::StackName}'
+      Roles:
+        - !Ref MigratorRole
+
+  MigratorRoleS3Policy:
+    Type: AWS::IAM::Policy
+    Condition: UsePrebuiltJar
+    Properties:
+      PolicyName: S3GetPrebuiltJar
+      Roles:
+        - !Ref MigratorRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: s3:GetObject
+            Resource: !Sub 'arn:aws:s3:::${PrebuiltJarBucket}/*'
+
+  MigratorSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub 'scylla-migrator-no-docker-${AWS::StackName}'
+      GroupDescription: Scylla Migrator no-docker - Web App, Spark UIs
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedCidr
+          Description: SSH
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: !Ref VpcCidrBlock
+          Description: All from VPC
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          CidrIp: !Ref AllowedCidr
+          Description: Web App
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: !Ref AllowedCidr
+          Description: Spark Master UI
+        - IpProtocol: tcp
+          FromPort: 18080
+          ToPort: 18080
+          CidrIp: !Ref AllowedCidr
+          Description: Spark History Server
+        - IpProtocol: tcp
+          FromPort: 8081
+          ToPort: 8081
+          CidrIp: !Ref AllowedCidr
+          Description: Spark Worker UI
+      Tags:
+        - Key: Name
+          Value: !Sub 'scylla-migrator-no-docker-sg-${AWS::StackName}'
+
+  MigratorInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref MigratorSecurityGroup
+      AssociatePublicIpAddress: true
+      IamInstanceProfile: !Ref MigratorInstanceProfile
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            set -e
+            exec > >(tee /var/log/user-data.log) 2>&1
+
+            SPARK_VERSION=3.5.8
+            HADOOP_VERSION=3
+            SCALA_VERSION=2.13
+            SPARK_HOME=/opt/spark
+            REPO_URL="${RepoUrl}"
+            DEPLOY_DIR=/home/ec2-user/scylla-migrator
+            PREBUILT_BUCKET="${PrebuiltJarBucket}"
+            PREBUILT_KEY="${PrebuiltJarKey}"
+
+            echo "=== Scylla Migrator EC2 (no Docker) ==="
+
+            # Install Java, Python, git, wget
+            dnf update -y
+            dnf install -y java-11-amazon-corretto-headless python3 python3-pip git wget tar
+
+            # Download and install Spark
+            SPARK_TGZ=spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}-scala${SCALA_VERSION}.tgz
+            wget -q "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/${SPARK_TGZ}" -O /tmp/${SPARK_TGZ}
+            tar -xzf /tmp/${SPARK_TGZ} -C /opt
+            mv /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}-scala${SCALA_VERSION} ${SPARK_HOME}
+            rm /tmp/${SPARK_TGZ}
+
+            # Environment for ec2-user
+            echo "export SPARK_HOME=${SPARK_HOME}" >> /home/ec2-user/.bashrc
+            echo "export PATH=\${SPARK_HOME}/bin:\${SPARK_HOME}/sbin:\$PATH" >> /home/ec2-user/.bashrc
+
+            # Spark event log dir and history server config
+            mkdir -p /tmp/spark-events
+            export SPARK_HISTORY_OPTS="-Dspark.history.ui.bindAddress=0.0.0.0 -Dspark.history.fs.logDirectory=file:/tmp/spark-events"
+
+            # Start Spark Master (runs in background by default)
+            ${SPARK_HOME}/sbin/start-master.sh
+            sleep 10
+
+            # Start Spark Worker
+            ${SPARK_HOME}/sbin/start-worker.sh spark://localhost:7077
+            sleep 5
+
+            # Start Spark History Server
+            ${SPARK_HOME}/sbin/start-history-server.sh
+
+            # Clone repo
+            mkdir -p "$(dirname "$DEPLOY_DIR")"
+            if [ -n "$REPO_URL" ] && [ "$REPO_URL" != "none" ]; then
+              if [ ! -d "$DEPLOY_DIR/.git" ]; then
+                git clone --depth 1 "$REPO_URL" "$DEPLOY_DIR" || true
+              fi
+            fi
+
+            cd "$DEPLOY_DIR" 2>/dev/null || { echo "Deploy dir not found"; exit 1; }
+
+            # Create config.yaml if missing
+            [ ! -f config.yaml ] && cp config.yaml.minimal config.yaml 2>/dev/null || touch config.yaml
+
+            # Get migrator JAR: prebuilt from S3 or build from source
+            JARS_DIR="$DEPLOY_DIR/migrator/target/scala-2.13"
+            mkdir -p "$JARS_DIR"
+
+            if [ -n "$PREBUILT_BUCKET" ] && [ -n "$PREBUILT_KEY" ]; then
+              aws s3 cp "s3://${PREBUILT_BUCKET}/${PREBUILT_KEY}" "$JARS_DIR/" 2>/dev/null || true
+            fi
+
+            if [ -z "$(ls -A $JARS_DIR/*assembly*.jar 2>/dev/null)" ]; then
+              echo "Building migrator JAR with sbt (this may take 5-15 min)..."
+              curl -sL "https://github.com/coursier/launchers/raw/master/cs-x86_64-pc-linux.gz" | gzip -d > /usr/local/bin/cs
+              chmod +x /usr/local/bin/cs
+              /usr/local/bin/cs install sbt 2>/dev/null || true
+              export PATH="/root/.local/share/coursier/bin:/usr/local/bin:$PATH"
+              sbt -batch migrator/assembly 2>&1 | tail -30
+              if [ -z "$(ls -A $JARS_DIR/*assembly*.jar 2>/dev/null)" ]; then
+                echo "sbt build failed. Consider using PrebuiltJarBucket/PrebuiltJarKey."
+                exit 1
+              fi
+            fi
+
+            # Install Flask app dependencies for ec2-user (docker optional - not used in no-docker mode)
+            su - ec2-user -c "python3 -m pip install --user flask requests PyYAML cassandra-driver boto3" 2>/dev/null || \
+              python3 -m pip install flask requests PyYAML cassandra-driver boto3 --break-system-packages
+
+            # Use public IP for Spark UI links
+            EXTERNAL_HOST=$(curl -sf http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo localhost)
+            export EXTERNAL_HOST
+
+            # Run Flask app as ec2-user (no USE_DOCKER_EXEC, SPARK_MASTER_HOST=localhost)
+            cd "$DEPLOY_DIR/web-app"
+            export SPARK_MASTER_HOST=localhost
+            export MIGRATOR_CONFIG_PATH="$DEPLOY_DIR/config.yaml"
+            export FLASK_APP=app.py
+            # Symlinks for web-app to find JAR and Spark logs
+            sudo ln -sf /opt/spark /spark 2>/dev/null || true
+            sudo ln -sf "$DEPLOY_DIR" /app 2>/dev/null || true
+            sudo ln -sf "$DEPLOY_DIR/migrator/target/scala-2.13" /jars 2>/dev/null || true
+
+            # Run via systemd for persistence
+            cat > /tmp/scylla-migrator-web.service << 'SVCEOF'
+            [Unit]
+            Description=Scylla Migrator Web App
+            After=network.target
+
+            [Service]
+            Type=simple
+            User=ec2-user
+            WorkingDirectory=/home/ec2-user/scylla-migrator/web-app
+            EnvironmentFile=-/etc/scylla-migrator.env
+            Environment="SPARK_MASTER_HOST=localhost"
+            Environment="MIGRATOR_CONFIG_PATH=/home/ec2-user/scylla-migrator/config.yaml"
+            Environment="FLASK_APP=app.py"
+            Environment="PATH=/opt/spark/bin:/opt/spark/sbin:/home/ec2-user/.local/bin:/usr/local/bin:/usr/bin"
+            ExecStart=/usr/bin/python3 -m flask run --host=0.0.0.0 --port=5000
+            Restart=on-failure
+            RestartSec=10
+
+            [Install]
+            WantedBy=multi-user.target
+            SVCEOF
+
+            sudo mv /tmp/scylla-migrator-web.service /etc/systemd/system/
+            sudo systemctl daemon-reload
+            sudo systemctl enable scylla-migrator-web
+            sudo systemctl start scylla-migrator-web
+
+            # Ensure ec2-user can run spark-submit (in PATH for jobs)
+            echo 'export PATH=/opt/spark/bin:/opt/spark/sbin:$PATH' | sudo tee -a /etc/profile.d/spark.sh
+            echo 'export SPARK_HOME=/opt/spark' | sudo tee -a /etc/profile.d/spark.sh
+
+            echo "EXTERNAL_HOST=$EXTERNAL_HOST" | sudo tee /etc/scylla-migrator.env
+
+            echo "=== Bootstrap complete ==="
+            echo "Web app: http://${EXTERNAL_HOST}:5000"
+            echo "Spark Master: http://${EXTERNAL_HOST}:8080"
+            echo "Spark History: http://${EXTERNAL_HOST}:18080"
+            echo "Worker UI: http://${EXTERNAL_HOST}:8081"
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 100
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub 'scylla-migrator-no-docker-${AWS::StackName}'
+
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID
+    Value: !Ref MigratorInstance
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceId'
+  PublicIp:
+    Description: Public IP
+    Value: !GetAtt MigratorInstance.PublicIp
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicIp'
+  WebAppUrl:
+    Description: Web app URL
+    Value: !Sub 'http://${MigratorInstance.PublicIp}:5000'
+  SparkMasterUrl:
+    Description: Spark Master UI
+    Value: !Sub 'http://${MigratorInstance.PublicIp}:8080'
+  SparkHistoryUrl:
+    Description: Spark History Server
+    Value: !Sub 'http://${MigratorInstance.PublicIp}:18080'
+  SshCommand:
+    Description: SSH command
+    Value: !Sub 'ssh -i <your-key.pem> ec2-user@${MigratorInstance.PublicIp}'
+  SsmConnectCommand:
+    Description: Connect via SSM
+    Value: !Sub 'aws ssm start-session --target ${MigratorInstance}'

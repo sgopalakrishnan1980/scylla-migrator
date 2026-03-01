@@ -102,6 +102,13 @@ export EXTERNAL_HOST
 echo "Starting Docker Compose (Spark + web app)..."
 docker compose -f docker-compose.ec2.yml up -d
 
+echo "Waiting 2 minutes for services to stabilize..."
+sleep 120
+
+if [ -f "$DEPLOY_DIR/scripts/post-deploy-wait.sh" ]; then
+  bash "$DEPLOY_DIR/scripts/post-deploy-wait.sh" || true
+fi
+
 echo "=== Bootstrap complete ==="
 echo "Web app: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo localhost):5000"
 echo "Spark Master: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo localhost):8080"

@@ -48,7 +48,14 @@ if ! docker compose -f "$COMPOSE_FILE" up -d; then
   exit 1
 fi
 
-echo "Waiting for services (max ${MAX_WAIT}s)..."
+echo "Waiting 2 minutes for services to stabilize..."
+sleep 120
+
+if [ -f "$PROJECT_ROOT/scripts/post-deploy-wait.sh" ]; then
+  bash "$PROJECT_ROOT/scripts/post-deploy-wait.sh" || true
+fi
+
+echo "Waiting for Spark Master UI (max ${MAX_WAIT}s)..."
 WAITED=0
 while [ $WAITED -lt $MAX_WAIT ]; do
   if curl -s -o /dev/null -w "%{http_code}" http://localhost:8080 2>/dev/null | grep -q 200; then
