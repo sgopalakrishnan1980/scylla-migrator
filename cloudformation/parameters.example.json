@@ -1,0 +1,34 @@
+[
+  {
+    "ParameterKey": "VpcId",
+    "ParameterValue": "vpc-xxxxxxxxx"
+  },
+  {
+    "ParameterKey": "SubnetId",
+    "ParameterValue": "subnet-xxxxxxxxx"
+  },
+  {
+    "ParameterKey": "VpcCidrBlock",
+    "ParameterValue": "10.0.0.0/16"
+  },
+  {
+    "ParameterKey": "KeyName",
+    "ParameterValue": "your-key-pair-name"
+  },
+  {
+    "ParameterKey": "InstanceType",
+    "ParameterValue": "m6i.6xlarge"
+  },
+  {
+    "ParameterKey": "SshAllowedCidr",
+    "ParameterValue": "0.0.0.0/0"
+  },
+  {
+    "ParameterKey": "RepoUrl",
+    "ParameterValue": "https://github.com/scylladb/scylla-migrator.git"
+  },
+  {
+    "ParameterKey": "IamInstanceProfile",
+    "ParameterValue": ""
+  }
+]

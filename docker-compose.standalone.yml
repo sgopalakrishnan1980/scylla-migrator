@@ -1,0 +1,30 @@
+# Standalone web-app for Scylla Migrator config creation only.
+# No Spark, Scylla, or migration execution - just the config creator UI.
+#
+# Usage:
+#   docker compose -f docker-compose.standalone.yml up -d
+#   Open http://localhost:5000
+#
+# Debug (foreground, verbose Flask logs):
+#   DEBUG=1 docker compose -f docker-compose.standalone.yml up --build
+#
+# Config files are saved to ./config-output/ on the host.
+
+services:
+  config-creator:
+    build: web-app
+    ports:
+      - "5000:5000"
+    environment:
+      MIGRATOR_CONFIG_PATH: /app/config-output/config.yaml
+      STANDALONE_MODE: "1"
+      FLASK_DEBUG: "${FLASK_DEBUG:-0}"
+      FLASK_ENV: "${FLASK_ENV:-production}"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./config-output:/app/config-output
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3

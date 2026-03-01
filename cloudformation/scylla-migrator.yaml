@@ -1,0 +1,180 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Scylla Migrator - Deploy EC2 with 5-container stack (3 Alternator + Spark + web app) in an existing VPC
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Select the VPC where the migrator instance will be deployed
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Select a subnet in the chosen VPC (must be in the selected VPC)
+  VpcCidrBlock:
+    Type: String
+    Description: CIDR block of the selected VPC (e.g. 10.0.0.0/16). Used to allow inbound traffic from the VPC to the deployed host.
+    Default: '10.0.0.0/16'
+    AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: SSH key pair for EC2 access
+  InstanceType:
+    Type: String
+    Default: m6i.6xlarge
+    Description: EC2 instance type (24 vCPUs recommended)
+    AllowedValues:
+      - m6i.6xlarge
+      - m6i.4xlarge
+      - c6i.6xlarge
+      - c6i.4xlarge
+      - m7i.6xlarge
+  SshAllowedCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR allowed for SSH access (restrict in production)
+  RepoUrl:
+    Type: String
+    Default: https://github.com/scylladb/scylla-migrator.git
+    Description: Git repo URL for scylla-migrator
+  IamInstanceProfile:
+    Type: String
+    Default: ''
+    Description: '(Optional) IAM instance profile for S3/DynamoDB access. Leave empty if not needed.'
+
+Conditions:
+  HasIamProfile: !Not [!Equals [!Ref IamInstanceProfile, '']]
+
+Resources:
+  MigratorSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub 'scylla-migrator-${AWS::StackName}'
+      GroupDescription: Scylla Migrator - Spark, Alternator, Web App
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # SSH from specified CIDR
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SshAllowedCidr
+          Description: SSH
+        # Allow ALL traffic from within the VPC (deployed host and other VPC resources)
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: !Ref VpcCidrBlock
+          Description: All traffic from VPC
+        # Web app and Spark UIs from internet (optional - remove for private-only)
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          CidrIp: !Ref SshAllowedCidr
+          Description: Web App
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: !Ref SshAllowedCidr
+          Description: Spark Master UI
+        - IpProtocol: tcp
+          FromPort: 18080
+          ToPort: 18080
+          CidrIp: !Ref SshAllowedCidr
+          Description: Spark History Server
+        - IpProtocol: tcp
+          FromPort: 8081
+          ToPort: 8081
+          CidrIp: !Ref SshAllowedCidr
+          Description: Spark Worker UI
+        - IpProtocol: tcp
+          FromPort: 9042
+          ToPort: 9042
+          CidrIp: !Ref SshAllowedCidr
+          Description: Scylla CQL
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: !Ref SshAllowedCidr
+          Description: Scylla Alternator
+      Tags:
+        - Key: Name
+          Value: !Sub 'scylla-migrator-sg-${AWS::StackName}'
+
+  MigratorInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref MigratorSecurityGroup
+      AssociatePublicIpAddress: true
+      IamInstanceProfile: !If [HasIamProfile, !Ref IamInstanceProfile, !Ref 'AWS::NoValue']
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            set -e
+            exec > >(tee /var/log/user-data.log) 2>&1
+
+            REPO_URL="${RepoUrl}"
+            DEPLOY_DIR="/home/ec2-user/scylla-migrator"
+
+            echo "=== Scylla Migrator EC2 Bootstrap ==="
+
+            yum update -y
+            yum install -y docker
+            systemctl enable docker
+            systemctl start docker
+            usermod -aG docker ec2-user
+
+            for i in $(seq 1 30); do
+              if docker info &>/dev/null; then break; fi
+              sleep 2
+            done
+
+            mkdir -p "$(dirname "$DEPLOY_DIR")"
+            if [ -n "$REPO_URL" ] && [ "$REPO_URL" != "none" ]; then
+              if [ ! -d "$DEPLOY_DIR/.git" ]; then
+                git clone --depth 1 "$REPO_URL" "$DEPLOY_DIR" || true
+              fi
+            fi
+
+            cd "$DEPLOY_DIR" 2>/dev/null || { echo "Deploy dir not found: $DEPLOY_DIR"; exit 1; }
+
+            mkdir -p data/spark-master data/spark-worker data/spark-events
+
+            echo "Starting Docker Compose..."
+            docker compose up -d
+
+            echo "=== Bootstrap complete ==="
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 100
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub 'scylla-migrator-${AWS::StackName}'
+
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID
+    Value: !Ref MigratorInstance
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceId'
+  PublicIp:
+    Description: Public IP of the migrator instance
+    Value: !GetAtt MigratorInstance.PublicIp
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicIp'
+  WebAppUrl:
+    Description: Web app URL
+    Value: !Sub 'http://${MigratorInstance.PublicIp}:5000'
+  SparkMasterUrl:
+    Description: Spark Master UI URL
+    Value: !Sub 'http://${MigratorInstance.PublicIp}:8080'
+  SparkHistoryUrl:
+    Description: Spark History Server URL
+    Value: !Sub 'http://${MigratorInstance.PublicIp}:18080'
+  SshCommand:
+    Description: SSH command to connect
+    Value: !Sub 'ssh -i <your-key.pem> ec2-user@${MigratorInstance.PublicIp}'

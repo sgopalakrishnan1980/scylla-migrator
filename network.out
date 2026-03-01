@@ -1,0 +1,82 @@
+[
+    {
+        "Name": "scylla-migrator_bigdata-net",
+        "Id": "f397ffcd04e395c7b9e10cda0bbef50f87d5b8ce61009ab1602617245ddaa492",
+        "Created": "2026-02-24T16:55:25.517607928+05:30",
+        "Scope": "local",
+        "Driver": "bridge",
+        "EnableIPv4": true,
+        "EnableIPv6": false,
+        "IPAM": {
+            "Driver": "default",
+            "Options": null,
+            "Config": [
+                {
+                    "Subnet": "172.19.0.0/16",
+                    "Gateway": "172.19.0.1"
+                }
+            ]
+        },
+        "Internal": false,
+        "Attachable": false,
+        "Ingress": false,
+        "ConfigFrom": {
+            "Network": ""
+        },
+        "ConfigOnly": false,
+        "Options": {},
+        "Labels": {
+            "com.docker.compose.config-hash": "93c4fc357d1cc17e937724d97477abcaa4b2b43b2393514927c1bad2e620508e",
+            "com.docker.compose.network": "bigdata-net",
+            "com.docker.compose.project": "scylla-migrator",
+            "com.docker.compose.version": "5.0.2"
+        },
+        "Containers": {
+            "19c26120ae3609a30ff5c34ed75a1b076a4961f5ef9ee8c9c89939a532210a7a": {
+                "Name": "scylla-node1",
+                "EndpointID": "ec6ebb49e7a4db5ea3fd8f8710e3bd5adbf597237843e41bb72bdfabafd8acba",
+                "MacAddress": "4e:8b:c6:98:bd:32",
+                "IPv4Address": "172.19.0.2/16",
+                "IPv6Address": ""
+            },
+            "2999b8fbbe79f81cc75e8f54b59a2303e7a92d888b480a4434af8af2248410de": {
+                "Name": "scylla-migrator-spark-master-1",
+                "EndpointID": "06dccc209c2fea1101fe515333e1b6a79504cc25932398362ec949f0b6a89157",
+                "MacAddress": "ee:ed:7c:da:f8:dc",
+                "IPv4Address": "172.19.0.3/16",
+                "IPv6Address": ""
+            },
+            "2c4d4f56f847c05ea274aac40f3a97f5049490a457809e5adfe328b34254c657": {
+                "Name": "scylla-node2",
+                "EndpointID": "32917d62e9125d97549561fc9f30f7f37ae693dc9f0952ce50574976cee7815b",
+                "MacAddress": "86:8c:f4:6a:cb:14",
+                "IPv4Address": "172.19.0.4/16",
+                "IPv6Address": ""
+            },
+            "4f371e5fba5b0c3ffcbb12d2d67c7e1cfda32da84a238f406e5f8b211a11f16c": {
+                "Name": "scylla-node3",
+                "EndpointID": "33b2ecc13f673a79b36fdd699b9cb34476ad7f31d84d520fb026d9972c68c84b",
+                "MacAddress": "42:10:c4:9e:ec:6c",
+                "IPv4Address": "172.19.0.5/16",
+                "IPv6Address": ""
+            },
+            "d1d6f3c86c3fbffd2b2730e1648bce305ce27e771217809151e410c8bed867b7": {
+                "Name": "scylla-migrator-spark-worker-1",
+                "EndpointID": "d63f077f512bf02b5cce53f39475f950b5f76c50b808616596412eb33e8f5e94",
+                "MacAddress": "06:5f:82:b3:0c:75",
+                "IPv4Address": "172.19.0.6/16",
+                "IPv6Address": ""
+            }
+        },
+        "Status": {
+            "IPAM": {
+                "Subnets": {
+                    "172.19.0.0/16": {
+                        "IPsInUse": 8,
+                        "DynamicIPsAvailable": 65528
+                    }
+                }
+            }
+        }
+    }
+]

@@ -1,0 +1,31 @@
+{
+  "LaunchTemplateName": "scylla-migrator",
+  "VersionDescription": "Scylla Migrator 5-container stack",
+  "LaunchTemplateData": {
+    "ImageId": "ami-0c55b159cbfafe1f0",
+    "InstanceType": "m6i.6xlarge",
+    "KeyName": "YOUR_KEY_NAME",
+    "SecurityGroupIds": ["YOUR_SECURITY_GROUP_ID"],
+    "IamInstanceProfile": {
+      "Name": "YOUR_INSTANCE_PROFILE"
+    },
+    "UserData": "IyEvYmluL2Jhc2gKc2V0IC1lCmV4ZWMgPiA+KHRlZSAvdmFyL2xvZy91c2VyLWRhdGEubG9nKSAyPiYxCmVjaG8gIj09PSBTY3lsbGEgTWlncmF0b3IgRUMyIEJvb3RzdHJhcCA9PT0iCnN1ZG8geXVtIHVwZGF0ZSAteQpzdWRvIHl1bSBpbnN0YWxsIC15IGRvY2tlcgpzdWRvIHN5c3RlbWN0bCBlbmFibGUgZG9ja2VyCnN1ZG8gc3lzdGVtY3RsIHN0YXJ0IGRvY2tlcgpzdWRvIHVzZXJtb2QgLWFHIGRvY2tlciBlYzItdXNlcgpjZCAvaG9tZS9lYzItdXNlciAmJiBnaXQgY2xvbmUgLS1kZXB0aCAxIGh0dHBzOi8vZ2l0aHViLmNvbS9zY3lsbGFkYi9zY3lsbGEtbWlncmF0b3IuZ2l0IHNjeWxsYS1taWdyYXRvciB8fCB0cnVlCmNkIHNjeWxsYS1taWdyYXRvciAmJiBkb2NrZXIgY29tcG9zZSB1cCAtZAplY2hvICJDb21wbGV0ZSI=",
+    "TagSpecifications": [
+      {
+        "ResourceType": "instance",
+        "Tags": [
+          {"Key": "Name", "Value": "scylla-migrator"}
+        ]
+      }
+    ],
+    "BlockDeviceMappings": [
+      {
+        "DeviceName": "/dev/xvda",
+        "Ebs": {
+          "VolumeSize": 100,
+          "VolumeType": "gp3"
+        }
+      }
+    ]
+  }
+}

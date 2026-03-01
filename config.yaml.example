@@ -1,0 +1,300 @@
+# Example configuration for migrating from Cassandra:
+source:
+  type: cassandra
+  host: cassandra-server-01
+  port: 9042
+  #optional, if not specified None will be used
+  #localDC: <localdc>
+  #credentials:
+  #  username: <user>
+  #  password: <pass>
+  # SSL as per https://github.com/scylladb/spark-cassandra-connector/blob/master/doc/reference.md#cassandra-ssl-connection-options
+  #sslOptions:
+  #  clientAuthEnabled: false
+  #  enabled: false
+  #  all below are optional! (generally just trustStorePassword and trustStorePath is needed)
+  #  trustStorePassword: <pass>
+  #  trustStorePath: <path>
+  #  trustStoreType: JKS
+  #  keyStorePassword: <pass>
+  #  keyStorePath: <path>
+  #  keyStoreType: JKS
+  #  enabledAlgorithms:
+  #   - TLS_RSA_WITH_AES_128_CBC_SHA
+  #   - TLS_RSA_WITH_AES_256_CBC_SHA
+  #  protocol: TLS
+  keyspace: stocks
+  table: stocks
+  # Consistency Level for the source connection
+  # Options are: LOCAL_ONE, ONE, LOCAL_QUORUM, QUORUM.
+  # Connector driver default is LOCAL_ONE. Our recommendation is LOCAL_QUORUM.
+  # If using ONE or LOCAL_ONE, ensure the source system is fully repaired.
+  consistencyLevel: LOCAL_QUORUM
+  # Preserve TTLs and WRITETIMEs of cells in the source database. Note that this
+  # option is *incompatible* when copying tables with collections (lists, maps, sets).
+  preserveTimestamps: true
+  # Number of splits to use - this should be at minimum the amount of cores
+  # available in the Spark cluster, and optimally more; higher splits will lead
+  # to more fine-grained resumes. Aim for 8 * (Spark cores).
+  splitCount: 256
+  # Number of connections to use to Cassandra when copying
+  connections: 8
+  # Number of rows to fetch in each read
+  fetchSize: 1000
+  # Optional condition to filter source table data that will be migrated
+  # where: race_start_date = '2015-05-27' AND race_end_date = '2015-05-27'
+
+# Example for loading from Parquet:
+# source:
+#   type: parquet
+#   path: s3a://bucket-name/path/to/parquet-directory
+#   # Optional AWS access/secret key for loading from S3.
+#   # This section can be left out if running on EC2 instances that have instance profiles with the
+#   # appropriate permissions.
+#   credentials:
+#     accessKey: <user>
+#     secretKey: <pass>
+#     # Optional - assume role, see https://docs.aws.amazon.com/IAM/latest/UserGuide/tutorial_cross-account-with-roles.html
+#     assumeRole:
+#       arn: <roleArn>
+#       # Optional - the session name to use. If not set, we use 'scylla-migrator'
+#       sessionName: <roleSessionName>
+#   # Optional - specify the region:
+#   region: <region>
+#   # Optional - specify the endpoint
+#   endpoint:
+#     # Specify the hostname without a protocol
+#     host: <host>
+#     port: <port>
+
+# Example for loading from DynamoDB:
+# source:
+#   type: dynamodb
+#   table: <table name>
+#   # Optional - load from a custom endpoint:
+#   endpoint:
+#     # Specify the hostname without a protocol
+#     host: <host>
+#     port: <port>
+#
+#   # Optional - specify the region:
+#   # region: <region>
+#
+#   # Optional - static credentials:
+#   credentials:
+#     accessKey: <user>
+#     secretKey: <pass>
+#     # Optional - assume role, see https://docs.aws.amazon.com/IAM/latest/UserGuide/tutorial_cross-account-with-roles.html
+#     assumeRole:
+#       arn: <roleArn>
+#       # Optional - the session name to use. If not set, we use 'scylla-migrator'
+#       sessionName: <sessionName>
+#
+#   # below controls split factor
+#   scanSegments: 1
+#
+#   # throttling settings, set based on your capacity (or wanted capacity)
+#   readThroughput: 1
+#
+#   # The value of dynamodb.throughput.read.percent can be between 0.1 and 1.5, inclusively.
+#   # 0.5 represents the default read rate, meaning that the job will attempt to consume half of the read capacity of the table.
+#   # If you increase the value above 0.5, spark will increase the request rate; decreasing the value below 0.5 decreases the read request rate.
+#   # (The actual read rate will vary, depending on factors such as whether there is a uniform key distribution in the DynamoDB table.)
+#   throughputReadPercent: 1.0
+#
+#   # how many tasks per executor?
+#   maxMapTasks: 1
+
+# Example for loading from a DynamoDB S3 export (see https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/S3DataExport.Output.html)
+# source:
+#   type: dynamodb-s3-export
+#   bucket: <bucket-name>
+#   # Key of the `manifest-summary.json` object in the bucket
+#   manifestKey: <manifest-summary-key>
+#   # Key schema and attribute definitions, see https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_TableCreationParameters.html
+#   tableDescription:
+#     attributeDefinitions:
+#       - name: <attribute-name>
+#         type: <attribute-type> (see https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_AttributeDefinition.html)
+#       - ...
+#     keySchema:
+#       - name: <key-name>
+#         type: <key-type> (see https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_KeySchemaElement.html)
+#       - ...
+#
+#   # Optional - load from a custom endpoint:
+#   endpoint:
+#     # Specify the hostname without a protocol
+#     host: <host>
+#     port: <port>
+#   # Optional - specify the region:
+#   region: <region>
+#
+#   # Optional - static credentials:
+#   credentials:
+#     accessKey: <user>
+#     secretKey: <pass>
+#     # Optional - assume role, see https://docs.aws.amazon.com/IAM/latest/UserGuide/tutorial_cross-account-with-roles.html
+#     assumeRole:
+#       arn: <roleArn>
+#       # Optional - the session name to use. If not set, we use 'scylla-migrator'
+#       sessionName: <roleSessionName>
+#
+#   # Optional - use path-style access in S3 (see https://docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html)
+#   usePathStyleAccess: true
+
+# Configuration for the database you're copying into
+target:
+  type: scylla
+  host: scylla 
+  port: 9042
+  #optional, if not specified None will be used
+  #localDC: <localdc>
+  #credentials:
+  #  username: <user>
+  #  password: <pass>
+  # SSL as per https://github.com/scylladb/spark-cassandra-connector/blob/master/doc/reference.md#cassandra-ssl-connection-options
+  #sslOptions:
+  #  clientAuthEnabled: false
+  #  enabled: false
+  #  all below are optional! (generally just trustStorePassword and trustStorePath is needed)
+  #  trustStorePassword: <pass>
+  #  trustStorePath: <path>
+  #  trustStoreType: JKS
+  #  keyStorePassword: <pass>
+  #  keyStorePath: <path>
+  #  keyStoreType: JKS
+  #  enabledAlgorithms:
+  #   - TLS_RSA_WITH_AES_128_CBC_SHA
+  #   - TLS_RSA_WITH_AES_256_CBC_SHA
+  #  protocol: TLS
+  # NOTE: The destination table must have the same schema as the source table.
+  # If you'd like to rename columns, that's ok - see the renames parameter below.
+  keyspace: stocks
+  table: stocks
+  # Consistency Level for the target connection
+  # Options are: LOCAL_ONE, ONE, LOCAL_QUORUM, QUORUM.
+  # Connector driver default is LOCAL_QUORUM.
+  consistencyLevel: LOCAL_QUORUM
+  # Number of connections to use to Scylla when copying
+  connections: 16
+  # Spark pads decimals with zeros appropriate to their scale. This causes values
+  # like '3.5' to be copied as '3.5000000000...' to the target. There's no good way
+  # currently to preserve the original value, so this flag can strip trailing zeros
+  # on decimal values before they are written.
+  stripTrailingZerosForDecimals: false
+  # if we cannot persist timestamps (so preserveTimestamps==false)
+  # we can enforce in writer a single TTL or writetimestamp for ALL written records
+  # such writetimestamp can be e.g. set to time BEFORE starting dual writes
+  # and this will make your migration safe from overwriting dual write
+  # even for collections
+  # ALL rows written will get the same TTL or writetimestamp or both
+  # (you can uncomment just one of them, or all or none)
+  # TTL in seconds (sample 7776000 is 90 days)
+  #writeTTLInS: 7776000
+  # writetime in microseconds (sample 1640998861000 is Saturday, January 1, 2022 2:01:01 AM GMT+01:00 )
+  #writeWritetimestampInuS: 1640998861000
+
+# Example for loading into a DynamoDB target (for example, Scylla's Alternator):
+# target:
+#   type: dynamodb
+#   table: <table name>
+#   # Optional - write to a custom endpoint:
+#   endpoint:
+#     # If writing to Scylla Alternator, prefix the hostname with 'http://'.
+#     host: <host>
+#     port: <port>
+#
+#   # Optional - specify the region:
+#   # region: <region>
+#
+#   # Optional - static credentials:
+#   credentials:
+#     accessKey: <user>
+#     secretKey: <pass>
+#     # Optional - assume role, see https://docs.aws.amazon.com/IAM/latest/UserGuide/tutorial_cross-account-with-roles.html
+#     assumeRole:
+#       arn: <roleArn>
+#       # Optional - the session name to use. If not set, we use 'scylla-migrator'
+#       sessionName: <roleSessionName>
+#
+#   # throttling settings, set based on your write capacity units (or wanted capacity)
+#   writeThroughput: 1
+#
+#   # The value of dynamodb.throughput.write.percent can be between 0.1 and 1.5, inclusively.
+#   # 0.5 represents the default write rate, meaning that the job will attempt to consume half of the write capacity of the table.
+#   # If you increase the value above 0.5, spark will increase the request rate; decreasing the value below 0.5 decreases the write request rate.
+#   # (The actual write rate will vary, depending on factors such as whether there is a uniform key distribution in the DynamoDB table.)
+#   throughputWritePercent: 1.0
+#
+#   # When transferring DynamoDB sources to DynamoDB targets (such as other DynamoDB tables or Alternator tables),
+#   # the migrator supports transferring live changes occuring on the source table after transferring an initial
+#   # snapshot. This is done using DynamoDB streams and incurs additional charges due to the Kinesis streams created.
+#   # Enable this flag to transfer live changes after transferring an initial snapshot. The migrator will continue
+#   # replicating changes endlessly; it must be stopped manually.
+#   #
+#   # NOTE: For the migration to be performed losslessly, the initial snapshot transfer must complete within 24 hours.
+#   # Otherwise, some captured changes may be lost due to the retention period of the table's stream.
+#   #
+#   # NOTE2: The migrator does not currently delete the created Dynamo stream. Delete it manually after ending the
+#   # migrator run.
+#   streamChanges: false
+#
+#   # Optional - explicitly set the billing mode when creating the target table.
+#   # Set to PROVISIONED or PAY_PER_REQUEST. If omitted, the mode is derived
+#   # from the source table or defaults to PAY_PER_REQUEST.
+#   billingMode: PAY_PER_REQUEST
+#
+#   # When billingMode is set to PROVISIONED or unset this should be true
+#   # Table created with provisioned mode in Alternator should have the `--provisioned-throughput ReadCapacityUnits=1,WriteCapacityUnits=1` set
+#   # It configures the capacity accounting and removes the need for it (needed for Scylla version > 2024.2)
+#   # removeConsumedCapacity: true
+#
+#   # Optional - when streamChanges is true, skip the initial snapshot transfer and only stream changes.
+#   # This setting is ignored if streamChanges is false.
+#   #skipInitialSnapshotTransfer: false
+
+# Savepoints are configuration files (like this one), saved by the migrator as it
+# runs. Their purpose is to skip token ranges that have already been copied. This
+# configuration only applies when copying from Cassandra/Scylla.
+savepoints:
+  # Where should savepoint configurations be stored? This is a path on the host running
+  # the Spark driver - usually the Spark master.
+  path: /app/savepoints
+  # Interval in which savepoints will be created
+  intervalSeconds: 300
+
+  # Optional - enables file-level savepoint tracking for parquet migrations.
+  # When enabled (default), the migrator tracks which parquet files have been fully migrated
+  # and skips them on restart, allowing for more granular resume capability.
+  # Set to `false` to revert to generic behaviour without file-level savepoints.
+  enableParquetFileTracking: true
+
+# Optional - Column renaming configuration. If you'd like to rename any columns, specify them like so:
+# - from: source_column_name
+#   to: dest_column_name
+# renames: []
+
+# Optional - Which token ranges to skip. You shouldn't need to fill this in normally; the migrator will
+# create a savepoint file with this filled.
+# skipTokenRanges: []
+
+# Optional - Which scan segments to skip. You shouldn’t need to fill this in normally; the migrator will
+# create a savepoint file with this filled.
+# skipSegments: []
+
+# Configuration section for running the validator. The validator is run manually (see documentation).
+# Mandatory if the application is executed in validation mode.
+# validation:
+#   # Should WRITETIMEs and TTLs be compared?
+#   compareTimestamps: true
+#   # What difference should we allow between TTLs?
+#   ttlToleranceMillis: 60000
+#   # What difference should we allow between WRITETIMEs?
+#   writetimeToleranceMillis: 1000
+#   # How many differences to fetch and print
+#   failuresToFetch: 100
+#   # What difference should we allow between floating point numbers?
+#   floatingPointTolerance: 0.001
+#   # What difference in ms should we allow between timestamps?
+#   timestampMsTolerance: 0

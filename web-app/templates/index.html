@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scylla Migrator - Config Creator</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 960px; }
+    h1 { color: #333; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 1.25rem; margin: 1rem 0; }
+    .card h2 { margin-top: 0; font-size: 1.1rem; border-bottom: 1px solid #eee; padding-bottom: 0.5rem; }
+    .form-row { margin: 0.75rem 0; }
+    .form-row label { display: block; font-weight: 500; margin-bottom: 0.25rem; font-size: 0.9rem; }
+    .form-row input[type="text"], .form-row input[type="number"], .form-row select { width: 100%; max-width: 400px; padding: 0.4rem; }
+    .form-row input[type="password"] { width: 100%; max-width: 400px; padding: 0.4rem; }
+    .radio-group { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+    .radio-group label { font-weight: normal; cursor: pointer; }
+    .btn { display: inline-block; padding: 0.5rem 1rem; background: #0066cc; color: white; border: none; border-radius: 4px; cursor: pointer; margin: 0.25rem 0.25rem 0 0; font-size: 0.9rem; }
+    .btn:hover { background: #0052a3; }
+    .btn-secondary { background: #666; }
+    .btn-secondary:hover { background: #555; }
+    .error { color: #c00; }
+    .success { color: #060; }
+    .section { display: none; }
+    .section.visible { display: block; }
+    #verifyResult, #validateResult, #saveResult { margin-top: 0.5rem; }
+    .issue { font-size: 0.85rem; color: #c00; margin: 0.2rem 0; }
+    .workaround-card { background: #f9f9f9; border-left: 4px solid #0066cc; padding: 0.75rem 1rem; margin: 0.5rem 0; font-size: 0.9rem; }
+    .workaround-card h4 { margin: 0 0 0.25rem 0; font-size: 0.95rem; }
+    .workaround-card a { color: #0066cc; }
+    .workaround-card summary { cursor: pointer; font-weight: 500; }
+  </style>
+</head>
+<body>
+  <h1>Scylla Migrator - Config Creator</h1>
+  {% if standalone_mode %}
+  <p style="background:#e8f4fc; padding:0.75rem; border-radius:4px; margin-bottom:1rem;">
+    <strong>Standalone mode</strong> — Config creation only. Use Verify Whitespace, Check Endpoints, and Save/Download. 
+    Deploy the full stack to run migrations.
+  </p>
+  {% endif %}
+
+  {% if not standalone_mode %}
+  <div class="card">
+    <h2>Spark UIs</h2>
+    <p><a href="{{ spark_master_url }}" target="_blank" class="btn">Spark Master UI</a>
+       <a href="{{ spark_history_url }}" target="_blank" class="btn">Spark History Server</a></p>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>Create Configuration</h2>
+
+    <div class="form-row">
+      <label>Source Type</label>
+      <select id="sourceType" onchange="onSourceTargetChange()">
+        <option value="cassandra">Cassandra / ScyllaDB (CQL)</option>
+        <option value="parquet">Parquet (S3 or local)</option>
+        <option value="dynamodb">DynamoDB (AWS)</option>
+        <option value="alternator">Alternator</option>
+        <option value="dynamodb-s3-export">DynamoDB S3 Export</option>
+      </select>
+    </div>
+
+    <div class="form-row">
+      <label>Target Type</label>
+      <select id="targetType" onchange="onSourceTargetChange()">
+        <option value="scylla">ScyllaDB (CQL)</option>
+        <option value="dynamodb">DynamoDB (AWS)</option>
+        <option value="alternator">Alternator</option>
+      </select>
+    </div>
+
+    <!-- Source: Cassandra -->
+    <div id="source-cassandra" class="section">
+      <h3>Source - Cassandra</h3>
+      <div class="form-row">
+        <label>Host</label>
+        <input type="text" id="src_host" placeholder="cassandra-server-01" value="cassandra-host">
+      </div>
+      <div class="form-row">
+        <label>Port</label>
+        <input type="number" id="src_port" value="9042">
+      </div>
+      <div class="form-row">
+        <label>Keyspace</label>
+        <input type="text" id="src_keyspace" placeholder="keyspace_name" value="keyspace">
+      </div>
+      <div class="form-row">
+        <label>Table</label>
+        <input type="text" id="src_table" placeholder="table_name" value="table">
+      </div>
+      <div class="form-row">
+        <label>Consistency Level</label>
+        <div class="radio-group">
+          <label><input type="radio" name="src_consistency" value="LOCAL_ONE"> LOCAL_ONE</label>
+          <label><input type="radio" name="src_consistency" value="ONE"> ONE</label>
+          <label><input type="radio" name="src_consistency" value="LOCAL_QUORUM" checked> LOCAL_QUORUM</label>
+          <label><input type="radio" name="src_consistency" value="QUORUM"> QUORUM</label>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Preserve Timestamps (TTL/WRITETIME)</label>
+        <div class="radio-group">
+          <label><input type="radio" name="src_preserveTimestamps" value="true"> Yes</label>
+          <label><input type="radio" name="src_preserveTimestamps" value="false" checked> No</label>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Username (optional)</label>
+        <input type="text" id="src_username" placeholder="Leave empty for no auth">
+      </div>
+      <div class="form-row">
+        <label>Password (optional)</label>
+        <input type="password" id="src_password" placeholder="Leave empty for no auth">
+      </div>
+    </div>
+
+    <!-- Source: Parquet -->
+    <div id="source-parquet" class="section">
+      <h3>Source - Parquet</h3>
+      <div class="form-row">
+        <label>Path (s3a://bucket/path or /local/path)</label>
+        <input type="text" id="parquet_path" placeholder="s3a://bucket/path or /app/parquet" value="s3a://bucket/path">
+      </div>
+      <div class="form-row">
+        <label>Region (optional, for S3)</label>
+        <input type="text" id="parquet_region" placeholder="us-east-1" value="us-east-1">
+      </div>
+      <div class="form-row">
+        <label>Access Key (optional)</label>
+        <input type="text" id="parquet_accessKey" placeholder="Leave empty for default/instance profile">
+      </div>
+      <div class="form-row">
+        <label>Secret Key (optional)</label>
+        <input type="password" id="parquet_secretKey" placeholder="Leave empty for default/instance profile">
+      </div>
+      <div class="form-row">
+        <label>Session Token (optional, endpoint checks only)</label>
+        <textarea id="parquet_sessionToken" rows="2" placeholder="For endpoint checks only; not saved in config" style="width:100%; max-width:400px; padding:0.4rem; font-family:monospace; font-size:0.9rem;"></textarea>
+      </div>
+      <div class="form-row">
+        <label>Assume Role ARN (optional)</label>
+        <input type="text" id="parquet_assumeRoleArn" placeholder="arn:aws:iam::123456789:role/MyRole">
+      </div>
+      <div class="form-row">
+        <label>Session Name (optional)</label>
+        <input type="text" id="parquet_sessionName" placeholder="scylla-migrator">
+      </div>
+    </div>
+
+    <!-- Source: DynamoDB (AWS) -->
+    <div id="source-dynamodb" class="section">
+      <h3>Source - DynamoDB (AWS)</h3>
+      <div class="form-row" style="background:#fff3cd; border:2px solid #ffc107; padding:1rem; border-radius:4px; margin-bottom:1rem; font-size:0.95rem;">
+        <strong style="color:#856404;">&#9888; Session tokens (temporary credentials) are refreshed every 15 minutes.</strong><br>
+        They can only be used for rudimentary endpoint checks via "Check Source &amp; Target Endpoints". For the actual migration, use long-lived credentials (accessKey/secretKey) or assumeRole.
+      </div>
+      <div class="form-row">
+        <label>Table Name</label>
+        <input type="text" id="ddb_src_table" placeholder="table-name" value="mytable">
+      </div>
+      <div class="form-row">
+        <label>Region (required)</label>
+        <input type="text" id="ddb_src_region" placeholder="us-east-1" value="us-east-1">
+        <small style="color:#666;">AWS SDK resolves endpoint from region. No endpoint URL needed.</small>
+      </div>
+      <div class="form-row">
+        <label>Access Key (optional)</label>
+        <input type="text" id="ddb_src_accessKey" placeholder="Leave empty for default/instance profile">
+      </div>
+      <div class="form-row">
+        <label>Secret Key (optional)</label>
+        <input type="password" id="ddb_src_secretKey" placeholder="Leave empty for default/instance profile">
+      </div>
+      <div class="form-row">
+        <label>Session Token (optional, endpoint checks only)</label>
+        <textarea id="ddb_src_sessionToken" rows="3" placeholder="Paste temporary credential session token here (refreshes every 15 min)" style="width:100%; max-width:400px; padding:0.4rem; font-family:monospace; font-size:0.9rem;"></textarea>
+      </div>
+      <div class="form-row">
+        <label>Assume Role ARN (optional)</label>
+        <input type="text" id="ddb_src_assumeRoleArn" placeholder="arn:aws:iam::123456789:role/MyRole">
+      </div>
+      <div class="form-row">
+        <label>Session Name (optional)</label>
+        <input type="text" id="ddb_src_sessionName" placeholder="scylla-migrator">
+      </div>
+    </div>
+
+    <!-- Source: Alternator -->
+    <div id="source-alternator" class="section">
+      <h3>Source - Alternator</h3>
+      <div class="form-row">
+        <label>Table Name</label>
+        <input type="text" id="alt_src_table" placeholder="table-name" value="mytable">
+      </div>
+      <div class="form-row">
+        <label>Endpoint URL</label>
+        <input type="text" id="alt_src_endpoint_host" placeholder="http://scylla-node1:8000" value="http://scylla-node1:8000">
+        <small style="color:#666;">Include protocol and port, e.g. http://host:8000</small>
+      </div>
+      <div class="form-row">
+        <label>Access Key (optional)</label>
+        <input type="text" id="alt_src_accessKey" placeholder="Leave empty if no auth">
+      </div>
+      <div class="form-row">
+        <label>Secret Key (optional)</label>
+        <input type="password" id="alt_src_secretKey" placeholder="Leave empty if no auth">
+      </div>
+      <div class="form-row">
+        <label>Session Token (optional, endpoint checks only)</label>
+        <textarea id="alt_src_sessionToken" rows="2" placeholder="For endpoint checks only; not saved in config" style="width:100%; max-width:400px; padding:0.4rem; font-family:monospace; font-size:0.9rem;"></textarea>
+      </div>
+      <div class="form-row">
+        <label>Assume Role ARN (optional)</label>
+        <input type="text" id="alt_src_assumeRoleArn" placeholder="arn:aws:iam::123456789:role/MyRole">
+      </div>
+      <div class="form-row">
+        <label>Session Name (optional)</label>
+        <input type="text" id="alt_src_sessionName" placeholder="scylla-migrator">
+      </div>
+    </div>
+
+    <!-- Source: DynamoDB S3 Export -->
+    <div id="source-dynamodb-s3-export" class="section">
+      <h3>Source - DynamoDB S3 Export</h3>
+      <div class="form-row">
+        <label>S3 Bucket</label>
+        <input type="text" id="s3_bucket" placeholder="bucket-name" value="my-bucket">
+      </div>
+      <div class="form-row">
+        <label>Manifest Key</label>
+        <input type="text" id="s3_manifest" placeholder="path/to/manifest-summary.json" value="export/manifest-summary.json">
+      </div>
+      <div class="form-row">
+        <label>Region</label>
+        <input type="text" id="s3_region" placeholder="us-east-1" value="us-east-1">
+      </div>
+      <div class="form-row">
+        <label>Partition Key Name</label>
+        <input type="text" id="s3_pk_name" placeholder="id" value="id">
+      </div>
+      <div class="form-row">
+        <label>Partition Key Type (S/N/B)</label>
+        <select id="s3_pk_type"><option value="S">S (String)</option><option value="N">N (Number)</option><option value="B">B (Binary)</option></select>
+      </div>
+      <div class="form-row">
+        <label>Access Key (optional)</label>
+        <input type="text" id="s3_accessKey" placeholder="Leave empty for default/instance profile">
+      </div>
+      <div class="form-row">
+        <label>Secret Key (optional)</label>
+        <input type="password" id="s3_secretKey" placeholder="Leave empty for default/instance profile">
+      </div>
+      <div class="form-row">
+        <label>Session Token (optional, endpoint checks only)</label>
+        <textarea id="s3_sessionToken" rows="2" placeholder="For endpoint checks only; not saved in config" style="width:100%; max-width:400px; padding:0.4rem; font-family:monospace; font-size:0.9rem;"></textarea>
+      </div>
+      <div class="form-row">
+        <label>Assume Role ARN (optional)</label>
+        <input type="text" id="s3_assumeRoleArn" placeholder="arn:aws:iam::123456789:role/MyRole">
+      </div>
+      <div class="form-row">
+        <label>Session Name (optional)</label>
+        <input type="text" id="s3_sessionName" placeholder="scylla-migrator">
+      </div>
+    </div>
+
+    <!-- Target: Scylla -->
+    <div id="target-scylla" class="section">
+      <h3>Target - ScyllaDB</h3>
+      <div class="form-row">
+        <label>Host</label>
+        <input type="text" id="tgt_host" placeholder="scylla-node1" value="scylla-node1">
+      </div>
+      <div class="form-row">
+        <label>Port</label>
+        <input type="number" id="tgt_port" value="9042">
+      </div>
+      <div class="form-row">
+        <label>Keyspace</label>
+        <input type="text" id="tgt_keyspace" placeholder="keyspace_name" value="keyspace">
+      </div>
+      <div class="form-row">
+        <label>Table</label>
+        <input type="text" id="tgt_table" placeholder="table_name" value="table">
+      </div>
+      <div class="form-row">
+        <label>Consistency Level</label>
+        <div class="radio-group">
+          <label><input type="radio" name="tgt_consistency" value="LOCAL_ONE"> LOCAL_ONE</label>
+          <label><input type="radio" name="tgt_consistency" value="ONE"> ONE</label>
+          <label><input type="radio" name="tgt_consistency" value="LOCAL_QUORUM" checked> LOCAL_QUORUM</label>
+          <label><input type="radio" name="tgt_consistency" value="QUORUM"> QUORUM</label>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Strip Trailing Zeros for Decimals</label>
+        <div class="radio-group">
+          <label><input type="radio" name="tgt_stripZeros" value="true"> Yes</label>
+          <label><input type="radio" name="tgt_stripZeros" value="false" checked> No</label>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Username (optional)</label>
+        <input type="text" id="tgt_username" placeholder="Leave empty for no auth">
+      </div>
+      <div class="form-row">
+        <label>Password (optional)</label>
+        <input type="password" id="tgt_password" placeholder="Leave empty for no auth">
+      </div>
+    </div>
+
+    <!-- Target: DynamoDB (AWS) -->
+    <div id="target-dynamodb" class="section">
+      <h3>Target - DynamoDB (AWS)</h3>
+      <div class="form-row">
+        <label>Table Name</label>
+        <input type="text" id="ddb_tgt_table" placeholder="table-name" value="mytable">
+      </div>
+      <div class="form-row">
+        <label>Region (required)</label>
+        <input type="text" id="ddb_tgt_region" placeholder="us-east-1" value="us-east-1">
+        <small style="color:#666;">AWS SDK resolves endpoint from region. No endpoint URL needed.</small>
+      </div>
+      <div class="form-row">
+        <label>Access Key (optional)</label>
+        <input type="text" id="ddb_tgt_accessKey" placeholder="Leave empty for default/instance profile">
+      </div>
+      <div class="form-row">
+        <label>Secret Key (optional)</label>
+        <input type="password" id="ddb_tgt_secretKey" placeholder="Leave empty for default/instance profile">
+      </div>
+      <div class="form-row">
+        <label>Session Token (optional, endpoint checks only)</label>
+        <textarea id="ddb_tgt_sessionToken" rows="2" placeholder="For endpoint checks only; not saved in config" style="width:100%; max-width:400px; padding:0.4rem; font-family:monospace; font-size:0.9rem;"></textarea>
+      </div>
+      <div class="form-row">
+        <label>Assume Role ARN (optional)</label>
+        <input type="text" id="ddb_tgt_assumeRoleArn" placeholder="arn:aws:iam::123456789:role/MyRole">
+      </div>
+      <div class="form-row">
+        <label>Session Name (optional)</label>
+        <input type="text" id="ddb_tgt_sessionName" placeholder="scylla-migrator">
+      </div>
+    </div>
+
+    <!-- Target: Alternator -->
+    <div id="target-alternator" class="section">
+      <h3>Target - Alternator</h3>
+      <div class="form-row">
+        <label>Table Name</label>
+        <input type="text" id="alt_tgt_table" placeholder="table-name" value="mytable">
+      </div>
+      <div class="form-row">
+        <label>Endpoint URL</label>
+        <input type="text" id="alt_tgt_endpoint_host" placeholder="http://scylla-node1:8000" value="http://scylla-node1:8000">
+        <small style="color:#666;">Include protocol and port, e.g. http://host:8000</small>
+      </div>
+      <div class="form-row">
+        <label>Access Key (optional)</label>
+        <input type="text" id="alt_tgt_accessKey" placeholder="Leave empty if no auth">
+      </div>
+      <div class="form-row">
+        <label>Secret Key (optional)</label>
+        <input type="password" id="alt_tgt_secretKey" placeholder="Leave empty if no auth">
+      </div>
+      <div class="form-row">
+        <label>Session Token (optional, endpoint checks only)</label>
+        <textarea id="alt_tgt_sessionToken" rows="2" placeholder="For endpoint checks only; not saved in config" style="width:100%; max-width:400px; padding:0.4rem; font-family:monospace; font-size:0.9rem;"></textarea>
+      </div>
+      <div class="form-row">
+        <label>Assume Role ARN (optional)</label>
+        <input type="text" id="alt_tgt_assumeRoleArn" placeholder="arn:aws:iam::123456789:role/MyRole">
+      </div>
+      <div class="form-row">
+        <label>Session Name (optional)</label>
+        <input type="text" id="alt_tgt_sessionName" placeholder="scylla-migrator">
+      </div>
+      <div class="form-row">
+        <label>Remove Consumed Capacity</label>
+        <div class="radio-group">
+          <label><input type="radio" name="tgt_removeConsumedCapacity" value="true" checked> Yes (recommended for Alternator)</label>
+          <label><input type="radio" name="tgt_removeConsumedCapacity" value="false"> No</label>
+        </div>
+        <small style="color:#666;">Required for Scylla Alternator 2024.2+ to avoid "INDEXES consumed capacity is not supported".</small>
+      </div>
+      <div class="form-row">
+        <label>Billing Mode (optional)</label>
+        <select id="alt_tgt_billingMode">
+          <option value="">Default (from source or PAY_PER_REQUEST)</option>
+          <option value="PAY_PER_REQUEST">PAY_PER_REQUEST</option>
+          <option value="PROVISIONED">PROVISIONED</option>
+        </select>
+        <small style="color:#666;">If PROVISIONED: create table manually with <code>--provisioned-throughput ReadCapacityUnits=1,WriteCapacityUnits=1</code> for Alternator 2025.1+.</small>
+      </div>
+    </div>
+
+    <!-- Savepoints -->
+    <div class="form-row">
+      <label>Savepoints Path</label>
+      <input type="text" id="savepoints_path" value="/app/savepoints">
+    </div>
+    <div class="form-row">
+      <label>Savepoints Interval (seconds)</label>
+      <input type="number" id="savepoints_interval" value="300">
+    </div>
+
+    <p>
+      <button class="btn" onclick="verifyWhitespace()">Verify Whitespace</button>
+      <button class="btn" onclick="testAccess()">Check Source & Target Endpoints</button>
+      {% if not standalone_mode %}
+      <button class="btn btn-secondary" onclick="validateConfig()">Validate Config</button>
+      <small style="color:#666; display:block; margin-top:0.25rem;">Validates config file structure (migrator --validate-config) and optionally runs rudimentary endpoint checks. Save Config first. This is not Spark-based data validation.</small>
+      {% endif %}
+      <button class="btn" onclick="saveConfig()">Save Config</button>
+      {% if standalone_mode %}
+      <button class="btn btn-secondary" onclick="downloadConfig()">Download Config</button>
+      <small style="color:#666; display:block; margin-top:0.25rem;">Save writes to ./config-output/config.yaml. Download saves to your machine.</small>
+      {% endif %}
+    </p>
+    <div id="verifyResult"></div>
+    <div id="accessResult"></div>
+    <div id="validateResult"></div>
+    <div id="saveResult"></div>
+  </div>
+
+  <div class="card">
+    <h2>Known Issues &amp; Workarounds</h2>
+    <p><small>From <a href="https://github.com/scylladb/scylla-migrator/issues" target="_blank">scylla-migrator GitHub issues</a></small></p>
+    <details>
+      <summary>Expand workarounds</summary>
+      <div class="workaround-card">
+        <h4>Alternator: "INDEXES consumed capacity is not supported"</h4>
+        <p>Set <code>removeConsumedCapacity: true</code> on the DynamoDB target (default in this UI). Required for Scylla Alternator 2024.2+.</p>
+        <p><a href="https://github.com/scylladb/scylla-migrator/issues/279" target="_blank">#279</a> <a href="https://github.com/scylladb/scylla-migrator/issues/249" target="_blank">#249</a></p>
+      </div>
+      <div class="workaround-card">
+        <h4>Alternator PROVISIONED: "provisionedThroughput.readCapacityUnits is missing"</h4>
+        <p>Create the target table manually with <code>--provisioned-throughput ReadCapacityUnits=1,WriteCapacityUnits=1</code> before migrating.</p>
+        <p><a href="https://github.com/scylladb/scylla-migrator/issues/244" target="_blank">#244</a></p>
+      </div>
+      <div class="workaround-card">
+        <h4>DynamoDB S3 Export: Savepoints not supported</h4>
+        <p>Savepoints may show "Unexpected partition type" errors when source is dynamodb-s3-export. Migration still completes; resume is limited.</p>
+        <p><a href="https://github.com/scylladb/scylla-migrator/issues/247" target="_blank">#247</a></p>
+      </div>
+      <div class="workaround-card">
+        <h4>Alternator with self-signed SSL</h4>
+        <p>trustCA / CA certificate support for Alternator target is not yet implemented. Use HTTP or wait for <a href="https://github.com/scylladb/scylla-migrator/issues/245" target="_blank">#245</a>.</p>
+      </div>
+    </details>
+  </div>
+
+  {% if not standalone_mode %}
+  <div class="card">
+    <h2>Job Submission</h2>
+    <div class="form-row">
+      <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+        <input type="checkbox" id="debugLogging" title="Enable DEBUG logging on driver, executor, master, and worker">
+        <span>Debug logging (max level on driver, executor, tasks)</span>
+      </label>
+      <small style="color:#666;">When checked, Spark driver and executors use DEBUG log level. View logs in Worker Logs and Spark UI.</small>
+    </div>
+    <p><button class="btn" onclick="submitJob()">Submit Migration Job</button></p>
+    <div id="jobStatus"></div>
+  </div>
+
+  <div class="card">
+    <h2>Worker Logs</h2>
+    <p><button class="btn" onclick="loadWorkerLogs()">Load Worker Logs</button></p>
+    <pre id="workerLogs" style="background:#f5f5f5; padding:1rem; overflow:auto; max-height:300px;"></pre>
+  </div>
+  {% endif %}
+
+  <script>
+    const configPath = '{{ config_path | default("/app/config.yaml") }}';
+
+    const VALID_COMBOS = {
+      cassandra: ['scylla'],
+      parquet: ['scylla'],
+      dynamodb: ['dynamodb', 'alternator'],
+      alternator: ['dynamodb', 'alternator'],
+      'dynamodb-s3-export': ['dynamodb', 'alternator']
+    };
+
+    function onSourceTargetChange() {
+      const src = document.getElementById('sourceType').value;
+      const tgt = document.getElementById('targetType').value;
+      const allowed = VALID_COMBOS[src] || [];
+      const tgtSelect = document.getElementById('targetType');
+      Array.from(tgtSelect.options).forEach(opt => {
+        opt.disabled = !allowed.includes(opt.value);
+      });
+      if (!allowed.includes(tgt)) {
+        tgtSelect.value = allowed[0];
+      }
+      document.querySelectorAll('.section').forEach(el => el.classList.remove('visible'));
+      document.getElementById('source-' + src)?.classList.add('visible');
+      document.getElementById('target-' + tgtSelect.value)?.classList.add('visible');
+    }
+
+    function parseEndpointUrl(url) {
+      if (!url) return { host: 'http://localhost', port: 8000 };
+      const withProto = url.startsWith('http') ? url : 'http://' + url;
+      const m = withProto.match(/^(https?:\/\/)([^:\/]+)(?::(\d+))?(?:\/|$)/);
+      if (m && m[3]) return { host: m[1] + m[2], port: parseInt(m[3], 10) };
+      return { host: withProto.replace(/\/$/, ''), port: 8000 };
+    }
+
+    // includeSessionToken: only for rudimentary endpoint checks. Migrator config does not support session token.
+    function buildAwsCreds(accessKeyId, secretKeyId, assumeRoleArnId, sessionNameId, sessionTokenId, includeSessionToken = false) {
+      const accessKey = document.getElementById(accessKeyId)?.value?.trim() || '';
+      const secretKey = document.getElementById(secretKeyId)?.value?.trim() || '';
+      if (!accessKey || !secretKey) return '';
+      let creds = `\n  credentials:\n    accessKey: ${accessKey}\n    secretKey: ${secretKey}`;
+      const sessionToken = (includeSessionToken && sessionTokenId) ? (document.getElementById(sessionTokenId)?.value?.trim() || '') : '';
+      if (sessionToken) creds += `\n    sessionToken: ${sessionToken}`;
+      const arn = document.getElementById(assumeRoleArnId)?.value?.trim() || '';
+      const sessionName = document.getElementById(sessionNameId)?.value?.trim() || '';
+      if (arn) {
+        creds += `\n    assumeRole:\n      arn: ${arn}`;
+        if (sessionName) creds += `\n      sessionName: ${sessionName}`;
+      }
+      return creds;
+    }
+
+    // forEndpointChecks: when true, include session token for endpoint checks only (migrator config does not support it)
+    function buildYaml(forEndpointChecks = false) {
+      const src = document.getElementById('sourceType').value;
+      const tgt = document.getElementById('targetType').value;
+      let yaml = '';
+
+      if (src === 'cassandra') {
+        const creds = document.getElementById('src_username').value.trim()
+          ? `\n  credentials:\n    username: ${document.getElementById('src_username').value}\n    password: ${document.getElementById('src_password').value}`
+          : '';
+        yaml = `source:
+  type: cassandra
+  host: ${document.getElementById('src_host').value.trim()}
+  port: ${document.getElementById('src_port').value}
+  keyspace: ${document.getElementById('src_keyspace').value.trim()}
+  table: ${document.getElementById('src_table').value.trim()}
+  consistencyLevel: ${document.querySelector('input[name="src_consistency"]:checked').value}
+  preserveTimestamps: ${document.querySelector('input[name="src_preserveTimestamps"]:checked').value}
+  fetchSize: 1000${creds}
+`;
+      } else if (src === 'parquet') {
+        const creds = buildAwsCreds('parquet_accessKey', 'parquet_secretKey', 'parquet_assumeRoleArn', 'parquet_sessionName', 'parquet_sessionToken', forEndpointChecks);
+        const region = document.getElementById('parquet_region').value.trim();
+        const regionLine = region ? `\n  region: ${region}` : '';
+        yaml = `source:
+  type: parquet
+  path: ${document.getElementById('parquet_path').value.trim()}${regionLine}${creds}
+`;
+      } else if (src === 'dynamodb') {
+        const creds = buildAwsCreds('ddb_src_accessKey', 'ddb_src_secretKey', 'ddb_src_assumeRoleArn', 'ddb_src_sessionName', 'ddb_src_sessionToken', forEndpointChecks);
+        const region = document.getElementById('ddb_src_region').value.trim() || 'us-east-1';
+        yaml = `source:
+  type: dynamodb
+  table: ${document.getElementById('ddb_src_table').value.trim()}
+  region: ${region}${creds}
+  throughputReadPercent: 1.0
+`;
+      } else if (src === 'alternator') {
+        const endpointUrl = document.getElementById('alt_src_endpoint_host').value.trim();
+        const { host, port } = parseEndpointUrl(endpointUrl);
+        const creds = buildAwsCreds('alt_src_accessKey', 'alt_src_secretKey', 'alt_src_assumeRoleArn', 'alt_src_sessionName', 'alt_src_sessionToken', forEndpointChecks);
+        yaml = `source:
+  type: dynamodb
+  table: ${document.getElementById('alt_src_table').value.trim()}
+  endpoint:
+    host: ${host}
+    port: ${port}${creds}
+  throughputReadPercent: 1.0
+`;
+      } else if (src === 'dynamodb-s3-export') {
+        const pk = document.getElementById('s3_pk_name').value.trim() || 'id';
+        const pkType = document.getElementById('s3_pk_type').value;
+        const creds = buildAwsCreds('s3_accessKey', 's3_secretKey', 's3_assumeRoleArn', 's3_sessionName', 's3_sessionToken', forEndpointChecks);
+        const region = document.getElementById('s3_region').value.trim();
+        const regionLine = region ? `\n  region: ${region}` : '';
+        yaml = `source:
+  type: dynamodb-s3-export
+  bucket: ${document.getElementById('s3_bucket').value.trim()}
+  manifestKey: ${document.getElementById('s3_manifest').value.trim()}${regionLine}${creds}
+  tableDescription:
+    attributeDefinitions:
+      - name: ${pk}
+        type: ${pkType}
+    keySchema:
+      - name: ${pk}
+        type: HASH
+`;
+      }
+
+      if (tgt === 'scylla') {
+        const creds = document.getElementById('tgt_username').value.trim()
+          ? `\n  credentials:\n    username: ${document.getElementById('tgt_username').value}\n    password: ${document.getElementById('tgt_password').value}`
+          : '';
+        yaml += `target:
+  type: scylla
+  host: ${document.getElementById('tgt_host').value.trim()}
+  port: ${document.getElementById('tgt_port').value}
+  keyspace: ${document.getElementById('tgt_keyspace').value.trim()}
+  table: ${document.getElementById('tgt_table').value.trim()}
+  consistencyLevel: ${document.querySelector('input[name="tgt_consistency"]:checked').value}
+  stripTrailingZerosForDecimals: ${document.querySelector('input[name="tgt_stripZeros"]:checked').value}${creds}
+`;
+      } else if (tgt === 'dynamodb') {
+        const creds = buildAwsCreds('ddb_tgt_accessKey', 'ddb_tgt_secretKey', 'ddb_tgt_assumeRoleArn', 'ddb_tgt_sessionName', 'ddb_tgt_sessionToken', forEndpointChecks);
+        const region = document.getElementById('ddb_tgt_region').value.trim() || 'us-east-1';
+        yaml += `target:
+  type: dynamodb
+  table: ${document.getElementById('ddb_tgt_table').value.trim()}
+  region: ${region}${creds}
+  throughputWritePercent: 1.0
+  streamChanges: false
+`;
+      } else if (tgt === 'alternator') {
+        const endpointUrl = document.getElementById('alt_tgt_endpoint_host').value.trim();
+        const { host, port } = parseEndpointUrl(endpointUrl);
+        const creds = buildAwsCreds('alt_tgt_accessKey', 'alt_tgt_secretKey', 'alt_tgt_assumeRoleArn', 'alt_tgt_sessionName', 'alt_tgt_sessionToken', forEndpointChecks);
+        const removeCap = document.querySelector('input[name="tgt_removeConsumedCapacity"]:checked')?.value === 'true';
+        const billingMode = document.getElementById('alt_tgt_billingMode').value;
+        const billingLine = billingMode ? `\n  billingMode: ${billingMode}` : '';
+        yaml += `target:
+  type: dynamodb
+  table: ${document.getElementById('alt_tgt_table').value.trim()}
+  endpoint:
+    host: ${host}
+    port: ${port}${creds}
+  throughputWritePercent: 1.0
+  streamChanges: false
+  removeConsumedCapacity: ${removeCap}${billingLine}
+`;
+      }
+
+      yaml += `savepoints:
+  path: ${document.getElementById('savepoints_path').value.trim()}
+  intervalSeconds: ${document.getElementById('savepoints_interval').value}
+`;
+      return yaml;
+    }
+
+    async function verifyWhitespace() {
+      const el = document.getElementById('verifyResult');
+      const yaml = buildYaml(false);
+      try {
+        const r = await fetch('/config/verify-whitespace', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: yaml })
+        });
+        const d = await r.json();
+        if (d.has_issues) {
+          el.innerHTML = '<span class="error">' + d.message + '</span>' +
+            d.issues.map(i => `<div class="issue">Line ${i.line}: ${i.message}</div>`).join('');
+        } else {
+          el.innerHTML = '<span class="success">' + d.message + '</span>';
+        }
+      } catch (e) {
+        el.innerHTML = '<span class="error">' + e.message + '</span>';
+      }
+    }
+
+    let lastCreateTablePayload = null;
+    let lastCreateTableEndpoint = null;
+
+    function escapeHtml(s) {
+      if (!s) return '';
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    function copyCreateTableCmd(ev) {
+      const pre = document.getElementById('createTableCmd');
+      if (pre) {
+        navigator.clipboard.writeText(pre.textContent).then(() => {
+          const btn = ev?.target;
+          if (btn) {
+            const orig = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(() => { btn.textContent = orig; }, 1500);
+          }
+        });
+      }
+    }
+
+    async function executeCreateTable() {
+      if (!lastCreateTablePayload || !lastCreateTableEndpoint) {
+        alert('Run Check Source & Target Endpoints first and ensure target table not found');
+        return;
+      }
+      const btn = event?.target;
+      if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
+      try {
+        const r = await fetch('/config/execute-create-table', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ endpoint: lastCreateTableEndpoint, payload: lastCreateTablePayload })
+        });
+        const d = await r.json();
+        if (d.success) {
+          alert(d.message || 'Table created. Run Check Endpoints again to verify.');
+        } else {
+          alert('Failed: ' + (d.error || 'Unknown error'));
+        }
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
+      if (btn) { btn.disabled = false; btn.textContent = 'Execute Create Table'; }
+    }
+
+    async function testAccess() {
+      const el = document.getElementById('accessResult');
+      el.innerHTML = 'Testing...';
+      lastCreateTablePayload = null;
+      lastCreateTableEndpoint = null;
+      const yaml = buildYaml(true);
+      try {
+        const r = await fetch('/config/test-access', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: yaml })
+        });
+        const d = await r.json();
+        if (d.success === false && d.error) {
+          el.innerHTML = '<span class="error">' + d.error + '</span>';
+          return;
+        }
+        let html = '';
+        if (d.source && Object.keys(d.source).length) {
+          const s = d.source;
+          html += '<div><strong>Source:</strong> ' + (s.ok ? '<span class="success">OK</span>' : '<span class="error">Failed</span>') + ' — ' + (s.message || '') + '</div>';
+        }
+        if (d.target && Object.keys(d.target).length) {
+          const t = d.target;
+          html += '<div><strong>Target:</strong> ' + (t.ok ? '<span class="success">OK</span>' : '<span class="error">Failed</span>') + ' — ' + (t.message || '') + '</div>';
+          if (!t.ok && (t.createTableCommand || t.tableNotFoundHint)) {
+            if (t.createTableCommand) {
+              lastCreateTablePayload = t.createTablePayload;
+              lastCreateTableEndpoint = t.createTableEndpoint;
+              html += '<div class="workaround-card" style="margin-top:0.5rem;">';
+              html += '<h4>Table not found — Create it with Alternator CLI</h4>';
+              html += '<pre id="createTableCmd" style="background:#f5f5f5; padding:0.5rem; overflow-x:auto; font-size:0.85rem;">' + escapeHtml(t.createTableCommand) + '</pre>';
+              html += '<p><button class="btn" onclick="copyCreateTableCmd(event)">Copy command</button> ';
+              html += '<button class="btn" onclick="executeCreateTable()">Execute Create Table</button></p>';
+              html += '<small style="color:#666;">Uses PAY_PER_REQUEST by default (recommended for Alternator). For PROVISIONED, create manually with --provisioned-throughput.</small>';
+              html += '</div>';
+            } else if (t.tableNotFoundHint) {
+              html += '<div class="workaround-card" style="margin-top:0.5rem;"><p>' + escapeHtml(t.tableNotFoundHint) + '</p></div>';
+            }
+          }
+        }
+        el.innerHTML = html || '<span class="success">Endpoint check complete</span>';
+      } catch (e) {
+        el.innerHTML = '<span class="error">' + e.message + '</span>';
+      }
+    }
+
+    async function validateConfig() {
+      const el = document.getElementById('validateResult');
+      el.innerHTML = 'Validating config structure and checking endpoints...';
+      try {
+        const r = await fetch('/config/validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: configPath })
+        });
+        const d = await r.json();
+        if (d.success) {
+          let html = '<span class="success">' + (d.message || 'Validation successful') + '</span>';
+          if (d.accessCheck && (d.accessCheck.source?.message || d.accessCheck.target?.message)) {
+            html += '<div style="margin-top:0.5rem; font-size:0.9rem;">';
+            if (d.accessCheck.source?.message) {
+              html += '<div><strong>Source endpoint:</strong> ' + (d.accessCheck.source.ok ? '<span class="success">OK</span>' : '<span class="error">Failed</span>') + ' — ' + d.accessCheck.source.message + '</div>';
+            }
+            if (d.accessCheck.target?.message) {
+              html += '<div><strong>Target endpoint:</strong> ' + (d.accessCheck.target.ok ? '<span class="success">OK</span>' : '<span class="error">Failed</span>') + ' — ' + d.accessCheck.target.message + '</div>';
+              const t = d.accessCheck.target;
+              if (!t.ok && t.createTableCommand) {
+                lastCreateTablePayload = t.createTablePayload;
+                lastCreateTableEndpoint = t.createTableEndpoint;
+                html += '<div class="workaround-card" style="margin-top:0.5rem;">';
+                html += '<h4>Table not found — Create it with Alternator CLI</h4>';
+                html += '<pre id="createTableCmd" style="background:#f5f5f5; padding:0.5rem; overflow-x:auto; font-size:0.85rem;">' + escapeHtml(t.createTableCommand) + '</pre>';
+                html += '<p><button class="btn" onclick="copyCreateTableCmd(event)">Copy command</button> ';
+                html += '<button class="btn" onclick="executeCreateTable()">Execute Create Table</button></p>';
+                html += '<small style="color:#666;">Uses PAY_PER_REQUEST by default (recommended for Alternator). For PROVISIONED, create manually with --provisioned-throughput.</small>';
+                html += '</div>';
+              }
+            }
+            html += '</div>';
+          }
+          el.innerHTML = html;
+        } else {
+          let err = d.error || 'Validation failed';
+          let html = '<span class="error">' + err + '</span>';
+          if (d.accessCheck && !d.accessCheck.success) {
+            const s = d.accessCheck.source;
+            const t = d.accessCheck.target;
+            if (s && !s.ok) err = 'Source: ' + (s.message || err);
+            else if (t && !t.ok) err = 'Target: ' + (t.message || err);
+            html = '<span class="error">' + err + '</span>';
+            if (t && !t.ok && (t.createTableCommand || t.tableNotFoundHint)) {
+              if (t.createTableCommand) {
+                lastCreateTablePayload = t.createTablePayload;
+                lastCreateTableEndpoint = t.createTableEndpoint;
+                html += '<div class="workaround-card" style="margin-top:0.5rem;">';
+                html += '<h4>Table not found — Create it with Alternator CLI</h4>';
+                html += '<pre id="createTableCmd" style="background:#f5f5f5; padding:0.5rem; overflow-x:auto; font-size:0.85rem;">' + escapeHtml(t.createTableCommand) + '</pre>';
+                html += '<p><button class="btn" onclick="copyCreateTableCmd(event)">Copy command</button> ';
+                html += '<button class="btn" onclick="executeCreateTable()">Execute Create Table</button></p>';
+                html += '</div>';
+              } else if (t.tableNotFoundHint) {
+                html += '<div class="workaround-card" style="margin-top:0.5rem;"><p>' + escapeHtml(t.tableNotFoundHint) + '</p></div>';
+              }
+            }
+          }
+          el.innerHTML = html;
+        }
+      } catch (e) {
+        el.innerHTML = '<span class="error">' + e.message + '</span>';
+      }
+    }
+
+    async function saveConfig() {
+      const el = document.getElementById('saveResult');
+      const yaml = buildYaml(false);
+      try {
+        const r = await fetch('/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: yaml, path: configPath })
+        });
+        const d = await r.json();
+        if (d.success) {
+          el.innerHTML = '<span class="success">Config saved to ' + configPath + '</span>';
+        } else {
+          el.innerHTML = '<span class="error">' + (d.error || 'Save failed') + '</span>';
+        }
+      } catch (e) {
+        el.innerHTML = '<span class="error">' + e.message + '</span>';
+      }
+    }
+
+    function downloadConfig() {
+      const yaml = buildYaml(false);
+      const blob = new Blob([yaml], { type: 'application/x-yaml' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'config.yaml';
+      a.click();
+      URL.revokeObjectURL(a.href);
+      const el = document.getElementById('saveResult');
+      el.innerHTML = '<span class="success">Config downloaded as config.yaml</span>';
+    }
+
+    async function submitJob() {
+      const status = document.getElementById('jobStatus');
+      const debug = document.getElementById('debugLogging').checked;
+      try {
+        const r = await fetch('/jobs/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ config_path: configPath, debug: debug })
+        });
+        const d = await r.json();
+        if (d.success) {
+          status.innerHTML = '<span class="success">Job submitted (PID: ' + d.pid + '). Check Spark Master UI.</span>';
+        } else {
+          status.innerHTML = '<span class="error">' + (d.error || 'Submit failed') + '</span>';
+        }
+      } catch (e) {
+        status.innerHTML = '<span class="error">' + e.message + '</span>';
+      }
+    }
+
+    async function loadWorkerLogs() {
+      const el = document.getElementById('workerLogs');
+      try {
+        const r = await fetch('/logs/worker?lines=200');
+        const d = await r.json();
+        if (d.success) {
+          el.textContent = d.content || '(empty)';
+        } else {
+          el.textContent = d.error || 'Logs not found';
+        }
+      } catch (e) {
+        el.textContent = e.message;
+      }
+    }
+
+    onSourceTargetChange();
+  </script>
+</body>
+</html>
