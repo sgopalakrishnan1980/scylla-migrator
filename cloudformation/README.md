@@ -1,6 +1,6 @@
 # CloudFormation Deployment
 
-Deploy Scylla Migrator into an **existing VPC** with CloudFormation. The template lets you select a VPC and subnet from dropdowns and adds a security group rule allowing **all inbound traffic from the VPC** to the deployed host.
+Deploy Scylla Migrator infrastructure (Spark + web app) into an **existing VPC** with CloudFormation. The infra focuses on configuration, Spark setup, and the web app — no Scylla/Alternator. Connect to your own target cluster. The template lets you select a VPC and subnet from dropdowns and adds a security group rule allowing **all inbound traffic from the VPC** to the deployed host.
 
 ## Files
 
@@ -17,12 +17,12 @@ Deploy Scylla Migrator into an **existing VPC** with CloudFormation. The templat
 | KeyName | SSH key pair |
 | InstanceType | m6i.6xlarge (24 vCPUs) recommended |
 | SshAllowedCidr | CIDR for SSH and web access |
-| IamInstanceProfile | Optional — for S3/DynamoDB access |
+| IamInstanceProfile | Optional — for S3/DynamoDB. Leave empty to use default (includes SSM for easy access) |
 
 ## Security Group
 
 - **All traffic from VPC**: Inbound rule with source = `VpcCidrBlock` (IpProtocol: -1) — allows any resource in the VPC to reach the migrator instance
-- SSH, Web app, Spark, Scylla ports from `SshAllowedCidr`
+- SSH, Web app, Spark ports from `SshAllowedCidr`
 
 ## Quick Deploy
 

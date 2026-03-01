@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Scylla Migrator - Deploy EC2 with 5-container stack (3 Alternator + Spark + web app) in an existing VPC
+Description: Scylla Migrator - Deploy EC2 with Spark + web app for configuration and migration (no Alternator — connect to your own target)
 
 Parameters:
   VpcId:
@@ -37,17 +37,40 @@ Parameters:
   IamInstanceProfile:
     Type: String
     Default: ''
-    Description: '(Optional) IAM instance profile for S3/DynamoDB access. Leave empty if not needed.'
+    Description: '(Optional) IAM instance profile name for S3/DynamoDB. Leave empty to use default (includes SSM for easy access).'
 
 Conditions:
   HasIamProfile: !Not [!Equals [!Ref IamInstanceProfile, '']]
 
 Resources:
+  MigratorSsmRoleDefault:
+    Type: AWS::IAM::Role
+    Condition: !Not [HasIamProfile]
+    Properties:
+      RoleName: !Sub 'scylla-migrator-ssm-${AWS::StackName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  MigratorSsmInstanceProfileDefault:
+    Type: AWS::IAM::InstanceProfile
+    Condition: !Not [HasIamProfile]
+    Properties:
+      InstanceProfileName: !Sub 'scylla-migrator-ssm-${AWS::StackName}'
+      Roles:
+        - !Ref MigratorSsmRoleDefault
+
   MigratorSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupName: !Sub 'scylla-migrator-${AWS::StackName}'
-      GroupDescription: Scylla Migrator - Spark, Alternator, Web App
+      GroupDescription: Scylla Migrator - Spark, Web App
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         # SSH from specified CIDR
@@ -83,16 +106,6 @@ Resources:
           ToPort: 8081
           CidrIp: !Ref SshAllowedCidr
           Description: Spark Worker UI
-        - IpProtocol: tcp
-          FromPort: 9042
-          ToPort: 9042
-          CidrIp: !Ref SshAllowedCidr
-          Description: Scylla CQL
-        - IpProtocol: tcp
-          FromPort: 8000
-          ToPort: 8000
-          CidrIp: !Ref SshAllowedCidr
-          Description: Scylla Alternator
       Tags:
         - Key: Name
           Value: !Sub 'scylla-migrator-sg-${AWS::StackName}'
@@ -107,7 +120,7 @@ Resources:
       SecurityGroupIds:
         - !Ref MigratorSecurityGroup
       AssociatePublicIpAddress: true
-      IamInstanceProfile: !If [HasIamProfile, !Ref IamInstanceProfile, !Ref 'AWS::NoValue']
+      IamInstanceProfile: !If [HasIamProfile, !Ref IamInstanceProfile, !Ref MigratorSsmInstanceProfileDefault]
       UserData:
         Fn::Base64:
           !Sub |
@@ -142,8 +155,8 @@ Resources:
 
             mkdir -p data/spark-master data/spark-worker data/spark-events
 
-            echo "Starting Docker Compose..."
-            docker compose up -d
+            echo "Starting Docker Compose (Spark + web app only)..."
+            docker compose -f docker-compose.ec2.yml up -d
 
             echo "=== Bootstrap complete ==="
       BlockDeviceMappings:
@@ -176,5 +189,8 @@ Outputs:
     Description: Spark History Server URL
     Value: !Sub 'http://${MigratorInstance.PublicIp}:18080'
   SshCommand:
-    Description: SSH command to connect
+    Description: SSH command to connect (key-based)
     Value: !Sub 'ssh -i <your-key.pem> ec2-user@${MigratorInstance.PublicIp}'
+  SsmConnectCommand:
+    Description: Connect via SSM (no SSH key, no port 22 required)
+    Value: !Sub 'aws ssm start-session --target ${MigratorInstance}'

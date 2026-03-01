@@ -1,5 +1,5 @@
 # Scylla Migrator EC2 Launch Template - Terraform
-# Deploys a single EC2 instance with Docker running the full migrator stack
+# Deploys a single EC2 instance with Docker running Spark + web app (config, Spark setup, web UI — no Alternator)
 
 terraform {
   required_version = ">= 1.0"
@@ -54,9 +54,37 @@ data "local_file" "userdata" {
   filename = "${path.module}/../scripts/ec2-userdata.sh"
 }
 
+# IAM role for SSM Agent (Session Manager) — easy SSH-free access
+resource "aws_iam_role" "migrator_ssm" {
+  name = "scylla-migrator-ssm"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ssm" {
+  role       = aws_iam_role.migrator_ssm.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "migrator" {
+  name = "scylla-migrator-ssm"
+  role = aws_iam_role.migrator_ssm.name
+}
+
 resource "aws_security_group" "migrator" {
   name        = "scylla-migrator-sg"
-  description = "Scylla Migrator - Spark, Alternator, Web App"
+  description = "Scylla Migrator - Spark, Web App"
 
   ingress {
     from_port   = 22
@@ -98,22 +126,6 @@ resource "aws_security_group" "migrator" {
     description = "Spark Worker UI"
   }
 
-  ingress {
-    from_port   = 9042
-    to_port     = 9042
-    protocol    = "tcp"
-    cidr_blocks = [var.allowed_cidr]
-    description = "Scylla CQL"
-  }
-
-  ingress {
-    from_port   = 8000
-    to_port     = 8000
-    protocol    = "tcp"
-    cidr_blocks = [var.allowed_cidr]
-    description = "Scylla Alternator"
-  }
-
   egress {
     from_port   = 0
     to_port     = 0
@@ -126,6 +138,7 @@ resource "aws_instance" "migrator" {
   ami                    = data.aws_ami.amazon_linux.id
   instance_type          = var.instance_type
   key_name               = var.key_name
+  iam_instance_profile   = aws_iam_instance_profile.migrator.name
   vpc_security_group_ids = [aws_security_group.migrator.id]
 
   user_data = templatefile("${path.module}/../scripts/ec2-userdata.sh", {
@@ -160,5 +173,10 @@ output "spark_master_url" {
 
 output "ssh_command" {
   value       = "ssh -i <your-key.pem> ec2-user@${aws_instance.migrator.public_ip}"
-  description = "SSH command to connect"
+  description = "SSH command to connect (key-based)"
+}
+
+output "ssm_connect_command" {
+  value       = "aws ssm start-session --target ${aws_instance.migrator.id}"
+  description = "Connect via SSM (no SSH key, no port 22 required)"
 }

@@ -94,9 +94,9 @@ fi
 # Create data dirs
 mkdir -p data/spark-master data/spark-worker data/spark-events
 
-# Start services
-echo "Starting Docker Compose..."
-docker compose up -d
+# Start services (Spark + web app only — no Scylla/Alternator)
+echo "Starting Docker Compose (Spark + web app)..."
+docker compose -f docker-compose.ec2.yml up -d
 
 echo "=== Bootstrap complete ==="
 echo "Web app: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo localhost):5000"

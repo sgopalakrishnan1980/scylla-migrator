@@ -1,0 +1,106 @@
+# Third-Party Dependencies
+# Scylla Migrator - External images, AMIs, and base artifacts in use.
+# Last updated: 2025-03
+
+================================================================================
+AMI IMAGES (EC2)
+================================================================================
+
+CloudFormation (cloudformation/scylla-migrator.yaml)
+  Reference: {{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}
+  Description: Amazon Linux 2023 (AL2023), kernel-default, x86_64
+  Link: https://docs.aws.amazon.com/linux/al2023/ug/what-is-amazon-linux.html
+  SSM Parameter: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  Resolves to: Latest AL2023 AMI ID (region-specific)
+  https://aws.amazon.com/linux/amazon-linux-2023/
+
+Terraform (terraform/main.tf)
+  Data source: aws_ami.amazon_linux
+  Filter: al2023-ami-*-x86_64
+  Description: Most recent Amazon Linux 2023 AMI, x86_64
+  Link: https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/ami
+
+Launch Template (scripts/ec2-launch-template.json) [legacy/example]
+  ImageId: ami-0c55b159cbfafe1f0
+  Description: Example/placeholder AMI (Amazon Linux 2, us-east-1)
+  Note: Replace with current AMI for your region
+  Link: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/AMIs.html
+
+================================================================================
+DOCKER IMAGES - PRE-BUILT (PULLED FROM REGISTRIES)
+================================================================================
+
+SCYLLA (ScyllaDB NoSQL database, CQL + Alternator)
+  Image: scylladb/scylla:latest
+  Used in: docker-compose.yaml, docker-compose-tests.yml, alternator-cluster/docker-compose.yaml
+  Docker Hub: https://hub.docker.com/r/scylladb/scylla
+  Tags: https://hub.docker.com/r/scylladb/scylla/tags
+  Docs: https://docs.scylladb.com/stable/get-started/develop-with-scylladb/run-scylladb.html
+
+  Image: scylladb/scylla:6.0.1
+  Used in: docs/source/tutorials/dynamodb-to-scylladb-alternator/docker-compose.yaml
+  Docker Hub: https://hub.docker.com/r/scylladb/scylla/tags?name=6.0.1
+
+AMAZON DYNAMODB LOCAL (local DynamoDB emulator)
+  Image: amazon/dynamodb-local:latest
+  Used in: docker-compose-tests.yml
+  Docker Hub: https://hub.docker.com/r/amazon/dynamodb-local
+  Docs: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.html
+
+  Image: amazon/dynamodb-local:2.5.2
+  Used in: docs/source/tutorials/dynamodb-to-scylladb-alternator/docker-compose.yaml
+
+APACHE CASSANDRA (source for migration tests)
+  Image: cassandra:latest
+  Used in: docker-compose-tests.yml
+  Docker Hub: https://hub.docker.com/_/cassandra
+  https://cassandra.apache.org/
+
+LOCALSTACK (AWS service emulator - S3 for tests)
+  Image: localstack/localstack:s3-latest
+  Used in: docker-compose-tests.yml
+  Docker Hub: https://hub.docker.com/r/localstack/localstack
+  Docs: https://docs.localstack.cloud/
+
+BITNAMI SPARK (alternator-cluster example)
+  Image: bitnami/spark:latest
+  Used in: alternator-cluster/docker-compose.yaml
+  Docker Hub: https://hub.docker.com/r/bitnami/spark
+  https://github.com/bitnami/containers/tree/main/bitnami/spark
+
+================================================================================
+DOCKER IMAGES - BUILT LOCALLY (BASE IMAGES FROM DOCKERFILE)
+================================================================================
+
+Spark container (dockerfiles/spark/Dockerfile)
+  Base: alpine:3.20
+  Docker Hub: https://hub.docker.com/_/alpine
+  Downloads: Apache Spark 3.5.8 (bin-hadoop3-scala2.13)
+  Spark archive: https://archive.apache.org/dist/spark/spark-3.5.8/
+  https://spark.apache.org/downloads.html
+
+Web app (web-app/Dockerfile)
+  Base: python:3.11-slim
+  Docker Hub: https://hub.docker.com/_/python
+  Python deps: See web-app/requirements.txt (flask, requests, PyYAML, cassandra-driver, boto3)
+
+================================================================================
+QUICK REFERENCE LINKS
+================================================================================
+
+AMI / EC2
+  Amazon Linux 2023: https://aws.amazon.com/linux/amazon-linux-2023/
+  AWS SSM Parameters (AMI): https://docs.aws.amazon.com/systems-manager/latest/userguide/parameter-store-public-parameters-ami.html
+
+ScyllaDB
+  Scylla Docker: https://hub.docker.com/r/scylladb/scylla
+  ScyllaDB docs: https://docs.scylladb.com/
+  ScyllaDB site: https://www.scylladb.com/
+
+Spark
+  Apache Spark: https://spark.apache.org/
+  Spark 3.5.x: https://spark.apache.org/releases/spark-release-3-5-0.html
+
+Docker official images
+  Alpine: https://hub.docker.com/_/alpine
+  Python: https://hub.docker.com/_/python

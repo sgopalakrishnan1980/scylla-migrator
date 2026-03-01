@@ -1,6 +1,6 @@
 # EC2 Deployment Guide
 
-Deploy the Scylla Migrator stack (3 Alternator nodes + Spark master + worker + web app) on a single EC2 instance.
+Deploy the Scylla Migrator infrastructure (Spark master + worker + web app) on a single EC2 instance. Focused on **configuration**, **Spark setup**, and the **web app** for easy use. No Scylla/Alternator — connect to your own target cluster.
 
 ## Prerequisites
 
@@ -27,7 +27,15 @@ Deploy into an **existing VPC** with a dropdown to select VPC and subnet. The se
    - **SshAllowedCidr**: CIDR for SSH and web access (default `0.0.0.0/0`; restrict in production)
    - **IamInstanceProfile**: Optional IAM instance profile for S3/DynamoDB access
 4. Create the stack. Wait 5–10 minutes for bootstrap.
-5. Use **Outputs** for Web app URL, Spark Master URL, and SSH command.
+5. Use **Outputs** for Web app URL, Spark Master URL, SSH command, and **SSM connect** command.
+
+**SSM access (recommended):** Leave `IamInstanceProfile` empty to use the default role with SSM. Then connect without SSH keys or port 22:
+
+```bash
+aws ssm start-session --target <instance-id>
+```
+
+See [SSM / SSH-over-SSM](#ssm--ssh-over-ssm) below.
 
 ### Via AWS CLI
 
@@ -54,7 +62,7 @@ aws cloudformation describe-stacks --stack-name scylla-migrator --query 'Stacks[
 
 - **SSH (22)**: From `SshAllowedCidr`
 - **All traffic from VPC**: Inbound from `VpcCidrBlock` (allows any resource in the VPC to reach the deployed host)
-- **Web app (5000), Spark (8080, 18080, 8081), Scylla (9042, 8000)**: From `SshAllowedCidr`
+- **Web app (5000), Spark (8080, 18080, 8081)**: From `SshAllowedCidr`
 
 ---
 
@@ -79,17 +87,52 @@ Outputs will show the public IP and URLs. Terraform creates a new VPC and securi
    - 8080 (Spark Master)
    - 18080 (Spark History)
    - 8081 (Spark Worker)
-   - 9042 (Scylla CQL)
-   - 8000 (Alternator)
 
 2. **Launch instance** (m6i.6xlarge recommended for 24 vCPUs):
    - AMI: Amazon Linux 2023
    - Instance type: m6i.6xlarge or c6i.6xlarge
-   - User data: contents of `scripts/ec2-userdata.sh`
+   - User data: contents of `scripts/ec2-userdata.sh` (uses `docker-compose.ec2.yml` — Spark + web app only)
 
 3. **Post-launch**: Wait 5-10 minutes, then access:
    - Web app: http://<public-ip>:5000
    - Spark Master: http://<public-ip>:8080
+
+---
+
+## SSM / SSH-over-SSM
+
+AWS Systems Manager Session Manager lets you connect to the instance without SSH keys or opening port 22. The CloudFormation template (with default `IamInstanceProfile`) and Terraform both attach an IAM role with `AmazonSSMManagedInstanceCore`. The SSM agent is pre-installed on Amazon Linux 2023.
+
+### Connect via SSM (shell)
+
+```bash
+aws ssm start-session --target <instance-id>
+```
+
+Get the instance ID from CloudFormation **Outputs** → `InstanceId`, or Terraform `terraform output` (use the instance ID, not the IP).
+
+### SSH over SSM (scp, rsync, SSH tools)
+
+Add to `~/.ssh/config`:
+
+```
+Host i-* mi-*
+  ProxyCommand sh -c "aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters 'portNumber=%p'"
+```
+
+Then connect using the instance ID as the hostname:
+
+```bash
+ssh ec2-user@i-0123456789abcdef0
+```
+
+### Prerequisites
+
+- **AWS CLI** with Session Manager plugin: `session-manager-plugin` (install via `aws cli` or [AWS docs](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html))
+- **IAM permissions** to call `ssm:StartSession` (or use an IAM user/role with `AmazonSSMManagedInstanceCore` or `SSMFullAccess`)
+- Instance must reach SSM endpoints (internet or VPC endpoints for `ssmmessages`, `ssm`, `ec2messages`)
+
+If using a **custom IamInstanceProfile**, add `AmazonSSMManagedInstanceCore` to that role for SSM access.
 
 ---
 

@@ -1,10 +1,38 @@
-# ScyllaDB Migrator
+# ScyllaDB Migrator (Fork)
 
-The ScyllaDB Migrator is a Spark application that migrates data to ScyllaDB from CQL-compatible or DynamoDB-compatible databases.
+This is a **fork** of the [ScyllaDB Migrator](https://github.com/scylladb/scylla-migrator) by ScyllaDB. The ScyllaDB Migrator is a Spark application that migrates data to ScyllaDB from CQL-compatible or DynamoDB-compatible databases.
+
+> **Original repository:** https://github.com/scylladb/scylla-migrator
+
+---
+
+## Major Changes from the Original
+
+- **Web app** — A Flask-based UI for config creation, validation, job submission, and monitoring (not present in the upstream repo).
+- **Build scripts** — Uses `build.sh` and `docker-build-jar.sh` instead of the upstream `Makefile` (`make build`, `make docker-build-jar`).
+- **Standalone mode** — The web app can run without Spark or Scylla, for config-only workflows.
+- **AWS deployment** — CloudFormation and Terraform for EC2; runs Spark + web app only (no Alternator — connect to your own target).
+- **SSM for EC2** — IAM role with `AmazonSSMManagedInstanceCore` by default; connect via `aws ssm start-session` without SSH keys or port 22.
+- **Debug tooling** — `deploy-debug.sh` and `deploy-standalone-debug.sh` for foreground/debug deployments.
+
+---
+
+## Additional Features
+
+- **Config Creator (Standalone)** — Deploy only the web app to create and manage migration configs without Spark or Scylla.
+- **Config whitespace verification** — Detects tabs and trailing spaces in config YAML that can cause Spark errors.
+- **Source/target access checks** — UI-driven connectivity tests for CQL, Parquet, DynamoDB, S3, and Alternator before migration.
+- **CreateTable via UI** — Execute DynamoDB CreateTable against Alternator from the web app (e.g., for table-not-found recovery).
+- **Known-issues workarounds** — In-app guidance for common Alternator and DynamoDB S3 export issues (see scylla-migrator GitHub issues).
+- **EC2 deployment** — CloudFormation and Terraform; `docker-compose.ec2.yml` runs Spark + web app only (config, Spark setup, web UI). No Alternator; connect to your own target. See `docs/EC2-DEPLOYMENT.md`.
+- **SSM Session Manager access** — Connect to EC2 via `aws ssm start-session --target <instance-id>` or SSH-over-SSM (no keys, no port 22). See [SSM / SSH-over-SSM](docs/EC2-DEPLOYMENT.md#ssm--ssh-over-ssm).
+
+---
 
 ## Documentation
 
-See https://migrator.docs.scylladb.com.
+- **Upstream docs:** https://migrator.docs.scylladb.com
+- **EC2 deployment (this fork):** [docs/EC2-DEPLOYMENT.md](docs/EC2-DEPLOYMENT.md) — CloudFormation, Terraform, SSM access
 
 ## Config Creator (Standalone)
 
@@ -39,8 +67,8 @@ Build locally:
 3. Run `build.sh`
 
 Build Locally in Docker:
-1. Run `docker-build-jar.sh` to build locally using docker or
-   
+1. Run `docker-build-jar.sh` to build locally using Docker.
+
 Both options will produce the .jar file to use in `spark-submit` command at path `migrator/target/scala-2.13/scylla-migrator-assembly.jar`.
 
 ## Contributing
