@@ -96,6 +96,10 @@ Outputs will show the public IP and URLs. Terraform creates a new VPC and securi
 3. **Post-launch**: Wait 5-10 minutes, then access:
    - Web app: http://<public-ip>:5000
    - Spark Master: http://<public-ip>:8080
+   - Spark History: http://<public-ip>:18080
+   - Spark Worker UI: http://<public-ip>:8081
+
+   The web app's Spark UI buttons use the instance public IP (via `EXTERNAL_HOST`) so links work from your browser.
 
 ---
 

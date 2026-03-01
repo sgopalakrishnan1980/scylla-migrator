@@ -16,7 +16,7 @@ services:
     ports:
       - "8000:8000"
     networks:
-      - bigdata-net
+      - scylla-migrator-spark-network
 
   scylla-node2:
     image: scylladb/scylla:latest
@@ -30,7 +30,7 @@ services:
       - --smp=1
       - --memory=1G
     networks:
-      - bigdata-net
+      - scylla-migrator-spark-network
 
   scylla-node3:
     image: scylladb/scylla:latest
@@ -44,7 +44,7 @@ services:
       - --smp=1
       - --memory=1G
     networks:
-      - bigdata-net
+      - scylla-migrator-spark-network
 
   # --- SPARK CLUSTER ---
   spark-master:
@@ -60,7 +60,7 @@ services:
       - "8080:8080" # Web UI
       - "7077:7077" # Master Port
     networks:
-      - bigdata-net
+      - scylla-migrator-spark-network
 
   spark-worker:
     image: bitnami/spark:latest
@@ -73,4 +73,4 @@ services:
       - SPARK_WORKER_CORES=1
       - SPARK_WORKER_MEMORY=1G
     networks:
-      - bigdata-net
+      - scylla-migrator-spark-network

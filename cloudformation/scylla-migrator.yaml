@@ -155,6 +155,9 @@ Resources:
 
             mkdir -p data/spark-master data/spark-worker data/spark-events
 
+            EXTERNAL_HOST=$(curl -sf http://169.254.169.254/latest/meta-data/public-ipv4 || true)
+            export EXTERNAL_HOST
+
             echo "Starting Docker Compose (Spark + web app only)..."
             docker compose -f docker-compose.ec2.yml up -d
 

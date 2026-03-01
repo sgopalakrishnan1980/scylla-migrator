@@ -27,13 +27,25 @@ SPARK_WORKER_PORT = 8081
 STANDALONE_MODE = os.environ.get("STANDALONE_MODE", "").lower() in ("1", "true", "yes")
 
 
+def _ui_base_host():
+    """Host for browser-facing URLs (Spark UIs). Use EXTERNAL_HOST if set, else request host."""
+    ext = os.environ.get("EXTERNAL_HOST", "").strip()
+    if ext:
+        return ext
+    if request and request.host:
+        return request.host.split(":")[0]
+    return "localhost"
+
+
 @app.route("/")
 def index():
     """Dashboard with links to Spark UIs (hidden in standalone mode)."""
+    base = _ui_base_host()
     return render_template(
         "index.html",
-        spark_master_url=f"http://{SPARK_MASTER_HOST}:{SPARK_MASTER_PORT}",
-        spark_history_url=f"http://{SPARK_MASTER_HOST}:{SPARK_HISTORY_PORT}",
+        spark_master_url=f"http://{base}:{SPARK_MASTER_PORT}",
+        spark_history_url=f"http://{base}:{SPARK_HISTORY_PORT}",
+        spark_worker_url=f"http://{base}:{SPARK_WORKER_PORT}",
         standalone_mode=STANDALONE_MODE,
         config_path=CONFIG_PATH,
     )
@@ -912,9 +924,11 @@ def submit_job():
 @app.route("/jobs/status")
 def jobs_status():
     """Return link to Spark History Server for job status."""
+    base = _ui_base_host()
     return jsonify({
-        "history_url": f"http://{SPARK_MASTER_HOST}:{SPARK_HISTORY_PORT}",
-        "master_url": f"http://{SPARK_MASTER_HOST}:{SPARK_MASTER_PORT}",
+        "history_url": f"http://{base}:{SPARK_HISTORY_PORT}",
+        "master_url": f"http://{base}:{SPARK_MASTER_PORT}",
+        "worker_url": f"http://{base}:{SPARK_WORKER_PORT}",
     })
 
 

@@ -94,6 +94,10 @@ fi
 # Create data dirs
 mkdir -p data/spark-master data/spark-worker data/spark-events
 
+# Use public IP for Spark UI links (browser-facing URLs)
+EXTERNAL_HOST=$(curl -sf http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)
+export EXTERNAL_HOST
+
 # Start services (Spark + web app only — no Scylla/Alternator)
 echo "Starting Docker Compose (Spark + web app)..."
 docker compose -f docker-compose.ec2.yml up -d
