@@ -1,16 +1,18 @@
 # Scylla Migrator - EC2 without Docker
 
-Deploys a single Amazon Linux EC2 instance with **SSM** (Session Manager), **Apache Spark 3.5.8** (master + worker), and the **Python Flask web app**. No Docker required—everything runs natively on the host.
+Deploys a single Amazon Linux EC2 instance with **SSM** (Session Manager), **Apache Spark 3.5.8 Standalone** (with Hadoop 3, Scala 2.13), **Spark Connect**, and the **Python Flask web app**. No Docker—everything runs natively via systemd services.
 
 ## What gets installed
 
-| Component       | Version / details                                      |
-|----------------|---------------------------------------------------------|
-| Amazon Linux   | AL2023 (latest AMI)                                    |
-| Spark          | 3.5.8 (bin-hadoop3-scala2.13)                          |
-| Java           | Amazon Corretto 11                                      |
-| Flask web app  | scylla-migrator web-app from repo                       |
-| Migrator JAR   | Built with sbt, or provided via S3 (see parameters)     |
+| Component           | Version / details                                      |
+|---------------------|---------------------------------------------------------|
+| Amazon Linux        | AL2023 (latest AMI)                                    |
+| Spark               | 3.5.8 (bin-hadoop3-scala2.13) from [Apache archive](https://archive.apache.org/dist/spark/) |
+| Spark Standalone    | Master (7077, UI 8080), Worker (8081), History (18080), Connect (15002) |
+| systemd services    | spark-master (autostart), spark-worker (depends on master), spark-history-server, spark-connect-server |
+| pyenv               | Python 3.11 (global)                                   |
+| PySpark + deps      | flask, requests, PyYAML, cassandra-driver, boto3        |
+| Migrator JAR        | Built with sbt, or provided via S3                     |
 
 ## Prerequisites
 
@@ -73,6 +75,7 @@ sudo tail -f /var/log/user-data.log
 | Spark Master   | http://\<public-ip\>:8080  |
 | Spark History  | http://\<public-ip\>:18080 |
 | Spark Worker   | http://\<public-ip\>:8081  |
+| Spark Connect  | sc://\<public-ip\>:15002   |
 
 ### Connect via SSM (no SSH key needed)
 

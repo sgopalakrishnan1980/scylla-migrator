@@ -33,8 +33,8 @@ Parameters:
     Description: CIDR allowed for web app and Spark UIs
   RepoUrl:
     Type: String
-    Default: https://github.com/scylladb/scylla-migrator.git
-    Description: Git repo URL for scylla-migrator
+    Default: https://github.com/sgopalakrishnan1980/scylla-migrator.git
+    Description: 'Git repo URL for scylla-migrator. Must include web-app/ directory for the Flask UI. Upstream may not have web-app; use a fork that includes it.'
   PrebuiltJarBucket:
     Type: String
     Default: ''
@@ -83,6 +83,19 @@ Resources:
             Action: s3:GetObject
             Resource: !Sub 'arn:aws:s3:::${PrebuiltJarBucket}/*'
 
+  MigratorRoleDynamoDBPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: DynamoDBFullAccess
+      Roles:
+        - !Ref MigratorRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: dynamodb:*
+            Resource: '*'
+
   MigratorSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -120,6 +133,11 @@ Resources:
           ToPort: 8081
           CidrIp: !Ref AllowedCidr
           Description: Spark Worker UI
+        - IpProtocol: tcp
+          FromPort: 15002
+          ToPort: 15002
+          CidrIp: !Ref AllowedCidr
+          Description: Spark Connect Server
       Tags:
         - Key: Name
           Value: !Sub 'scylla-migrator-no-docker-sg-${AWS::StackName}'
@@ -133,7 +151,6 @@ Resources:
       SubnetId: !Ref SubnetId
       SecurityGroupIds:
         - !Ref MigratorSecurityGroup
-      AssociatePublicIpAddress: true
       IamInstanceProfile: !Ref MigratorInstanceProfile
       UserData:
         Fn::Base64:
@@ -143,114 +160,52 @@ Resources:
             exec > >(tee /var/log/user-data.log) 2>&1
 
             SPARK_VERSION=3.5.8
-            HADOOP_VERSION=3
-            SCALA_VERSION=2.13
-            SPARK_HOME=/opt/spark
+            SPARK_URL="https://archive.apache.org/dist/spark/spark-3.5.8/spark-3.5.8-bin-hadoop3-scala2.13.tgz"
+            SPARK_HOME=/home/ec2-user/spark
+            SPARK_EVENTS=/home/ec2-user/spark-events
+            SPARK_PID_DIR=/home/ec2-user/spark-pids
             REPO_URL="${RepoUrl}"
             DEPLOY_DIR=/home/ec2-user/scylla-migrator
             PREBUILT_BUCKET="${PrebuiltJarBucket}"
             PREBUILT_KEY="${PrebuiltJarKey}"
 
-            echo "=== Scylla Migrator EC2 (no Docker) ==="
+            echo "=== Scylla Migrator EC2 - Spark Standalone + Connect + pyenv ==="
 
-            # Install Java, Python, git, wget
+            mkdir -p /home/ec2-user
+            chown -R ec2-user:ec2-user /home/ec2-user 2>/dev/null || true
+
             dnf update -y
-            dnf install -y java-11-amazon-corretto-headless python3 python3-pip git wget tar
+            dnf install -y java-11-amazon-corretto-headless git wget tar gzip unzip which make gcc patch zlib-devel bzip2 bzip2-devel readline-devel sqlite sqlite-devel openssl-devel tk-devel libffi-devel xz-devel
 
-            # Download and install Spark
-            SPARK_TGZ=spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}-scala${SCALA_VERSION}.tgz
-            wget -q "https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/${SPARK_TGZ}" -O /tmp/${SPARK_TGZ}
-            tar -xzf /tmp/${SPARK_TGZ} -C /opt
-            mv /opt/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}-scala${SCALA_VERSION} ${SPARK_HOME}
-            rm /tmp/${SPARK_TGZ}
+            curl -sS "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q -o /tmp/awscliv2.zip -d /tmp && /tmp/aws/install -i /opt/aws-cli -b /usr/local/bin 2>/dev/null || true
+            rm -rf /tmp/awscliv2.zip /tmp/aws
+            aws --version 2>/dev/null || true
 
-            # Environment for ec2-user
-            echo "export SPARK_HOME=${SPARK_HOME}" >> /home/ec2-user/.bashrc
-            echo "export PATH=\${SPARK_HOME}/bin:\${SPARK_HOME}/sbin:\$PATH" >> /home/ec2-user/.bashrc
+            wget -q "${!SPARK_URL}" -O /tmp/spark.tgz
+            tar -xzf /tmp/spark.tgz -C /tmp
+            mv /tmp/spark-3.5.8-bin-hadoop3-scala2.13 ${!SPARK_HOME}
+            rm /tmp/spark.tgz
+            mkdir -p ${!SPARK_EVENTS} ${!SPARK_PID_DIR}
+            chown -R ec2-user:ec2-user ${!SPARK_HOME} ${!SPARK_EVENTS} ${!SPARK_PID_DIR}
 
-            # Spark event log dir and history server config
-            mkdir -p /tmp/spark-events
-            export SPARK_HISTORY_OPTS="-Dspark.history.ui.bindAddress=0.0.0.0 -Dspark.history.fs.logDirectory=file:/tmp/spark-events"
+            EXTERNAL_HOST=$(curl -sf http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || hostname)
+            export SPARK_PUBLIC_DNS=${!EXTERNAL_HOST}
+            echo "EXTERNAL_HOST=${!EXTERNAL_HOST}" | sudo tee /etc/scylla-migrator.env
 
-            # Start Spark Master (runs in background by default)
-            ${SPARK_HOME}/sbin/start-master.sh
-            sleep 10
-
-            # Start Spark Worker
-            ${SPARK_HOME}/sbin/start-worker.sh spark://localhost:7077
-            sleep 5
-
-            # Start Spark History Server
-            ${SPARK_HOME}/sbin/start-history-server.sh
-
-            # Clone repo
-            mkdir -p "$(dirname "$DEPLOY_DIR")"
-            if [ -n "$REPO_URL" ] && [ "$REPO_URL" != "none" ]; then
-              if [ ! -d "$DEPLOY_DIR/.git" ]; then
-                git clone --depth 1 "$REPO_URL" "$DEPLOY_DIR" || true
-              fi
-            fi
-
-            cd "$DEPLOY_DIR" 2>/dev/null || { echo "Deploy dir not found"; exit 1; }
-
-            # Create config.yaml if missing
-            [ ! -f config.yaml ] && cp config.yaml.minimal config.yaml 2>/dev/null || touch config.yaml
-
-            # Get migrator JAR: prebuilt from S3 or build from source
-            JARS_DIR="$DEPLOY_DIR/migrator/target/scala-2.13"
-            mkdir -p "$JARS_DIR"
-
-            if [ -n "$PREBUILT_BUCKET" ] && [ -n "$PREBUILT_KEY" ]; then
-              aws s3 cp "s3://${PREBUILT_BUCKET}/${PREBUILT_KEY}" "$JARS_DIR/" 2>/dev/null || true
-            fi
-
-            if [ -z "$(ls -A $JARS_DIR/*assembly*.jar 2>/dev/null)" ]; then
-              echo "Building migrator JAR with sbt (this may take 5-15 min)..."
-              curl -sL "https://github.com/coursier/launchers/raw/master/cs-x86_64-pc-linux.gz" | gzip -d > /usr/local/bin/cs
-              chmod +x /usr/local/bin/cs
-              /usr/local/bin/cs install sbt 2>/dev/null || true
-              export PATH="/root/.local/share/coursier/bin:/usr/local/bin:$PATH"
-              sbt -batch migrator/assembly 2>&1 | tail -30
-              if [ -z "$(ls -A $JARS_DIR/*assembly*.jar 2>/dev/null)" ]; then
-                echo "sbt build failed. Consider using PrebuiltJarBucket/PrebuiltJarKey."
-                exit 1
-              fi
-            fi
-
-            # Install Flask app dependencies for ec2-user (docker optional - not used in no-docker mode)
-            su - ec2-user -c "python3 -m pip install --user flask requests PyYAML cassandra-driver boto3" 2>/dev/null || \
-              python3 -m pip install flask requests PyYAML cassandra-driver boto3 --break-system-packages
-
-            # Use public IP for Spark UI links
-            EXTERNAL_HOST=$(curl -sf http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo localhost)
-            export EXTERNAL_HOST
-
-            # Run Flask app as ec2-user (no USE_DOCKER_EXEC, SPARK_MASTER_HOST=localhost)
-            cd "$DEPLOY_DIR/web-app"
-            export SPARK_MASTER_HOST=localhost
-            export MIGRATOR_CONFIG_PATH="$DEPLOY_DIR/config.yaml"
-            export FLASK_APP=app.py
-            # Symlinks for web-app to find JAR and Spark logs
-            sudo ln -sf /opt/spark /spark 2>/dev/null || true
-            sudo ln -sf "$DEPLOY_DIR" /app 2>/dev/null || true
-            sudo ln -sf "$DEPLOY_DIR/migrator/target/scala-2.13" /jars 2>/dev/null || true
-
-            # Run via systemd for persistence
-            cat > /tmp/scylla-migrator-web.service << 'SVCEOF'
+            cat > /etc/systemd/system/spark-master.service << 'SVCEOF'
             [Unit]
-            Description=Scylla Migrator Web App
+            Description=Spark Standalone Master
             After=network.target
+            Wants=network.target
 
             [Service]
             Type=simple
             User=ec2-user
-            WorkingDirectory=/home/ec2-user/scylla-migrator/web-app
-            EnvironmentFile=-/etc/scylla-migrator.env
-            Environment="SPARK_MASTER_HOST=localhost"
-            Environment="MIGRATOR_CONFIG_PATH=/home/ec2-user/scylla-migrator/config.yaml"
-            Environment="FLASK_APP=app.py"
-            Environment="PATH=/opt/spark/bin:/opt/spark/sbin:/home/ec2-user/.local/bin:/usr/local/bin:/usr/bin"
-            ExecStart=/usr/bin/python3 -m flask run --host=0.0.0.0 --port=5000
+            Group=ec2-user
+            Environment="SPARK_HOME=/home/ec2-user/spark"
+            Environment="SPARK_PID_DIR=/home/ec2-user/spark-pids"
+            ExecStart=/home/ec2-user/spark/bin/spark-class org.apache.spark.deploy.master.Master --host 0.0.0.0 --port 7077 --webui-port 8080
             Restart=on-failure
             RestartSec=10
 
@@ -258,22 +213,174 @@ Resources:
             WantedBy=multi-user.target
             SVCEOF
 
-            sudo mv /tmp/scylla-migrator-web.service /etc/systemd/system/
+            cat > /etc/systemd/system/spark-worker.service << 'SVCEOF'
+            [Unit]
+            Description=Spark Standalone Worker
+            After=spark-master.service network.target
+            Requires=spark-master.service
+
+            [Service]
+            Type=simple
+            User=ec2-user
+            Group=ec2-user
+            Environment="SPARK_HOME=/home/ec2-user/spark"
+            Environment="SPARK_PID_DIR=/home/ec2-user/spark-pids"
+            ExecStart=/home/ec2-user/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://localhost:7077 --webui-port 8081
+            Restart=on-failure
+            RestartSec=10
+
+            [Install]
+            WantedBy=multi-user.target
+            SVCEOF
+
+            cat > /etc/systemd/system/spark-history-server.service << 'SVCEOF'
+            [Unit]
+            Description=Spark History Server
+            After=spark-master.service network.target
+            Requires=spark-master.service
+
+            [Service]
+            Type=simple
+            User=ec2-user
+            Group=ec2-user
+            Environment="SPARK_HOME=/home/ec2-user/spark"
+            Environment="SPARK_HISTORY_OPTS=-Dspark.history.ui.bindAddress=0.0.0.0 -Dspark.history.fs.logDirectory=file:/home/ec2-user/spark-events"
+            ExecStart=/home/ec2-user/spark/sbin/spark-class org.apache.spark.deploy.history.HistoryServer
+            Restart=on-failure
+            RestartSec=10
+
+            [Install]
+            WantedBy=multi-user.target
+            SVCEOF
+
+            cat > /etc/systemd/system/spark-connect-server.service << 'SVCEOF'
+            [Unit]
+            Description=Spark Connect Server
+            After=spark-worker.service network.target
+            Requires=spark-worker.service
+
+            [Service]
+            Type=simple
+            User=ec2-user
+            Group=ec2-user
+            Environment="SPARK_HOME=/home/ec2-user/spark"
+            ExecStart=/home/ec2-user/spark/sbin/start-connect-server.sh spark://localhost:7077
+            Restart=on-failure
+            RestartSec=10
+
+            [Install]
+            WantedBy=multi-user.target
+            SVCEOF
+
+            echo 'ec2-user ALL=(ALL) NOPASSWD: /bin/systemctl start spark-master.service, /bin/systemctl stop spark-master.service, /bin/systemctl restart spark-master.service, /bin/systemctl start spark-worker.service, /bin/systemctl stop spark-worker.service, /bin/systemctl restart spark-worker.service, /bin/systemctl start spark-history-server.service, /bin/systemctl stop spark-history-server.service, /bin/systemctl restart spark-history-server.service, /bin/systemctl start spark-connect-server.service, /bin/systemctl stop spark-connect-server.service, /bin/systemctl restart spark-connect-server.service, /bin/systemctl start scylla-migrator-web.service, /bin/systemctl stop scylla-migrator-web.service, /bin/systemctl restart scylla-migrator-web.service' > /etc/sudoers.d/scylla-migrator
+            chmod 440 /etc/sudoers.d/scylla-migrator
+
             sudo systemctl daemon-reload
-            sudo systemctl enable scylla-migrator-web
-            sudo systemctl start scylla-migrator-web
+            sudo systemctl enable spark-master.service
+            sudo systemctl start spark-master.service
+            sleep 15
+            sudo systemctl enable spark-worker.service
+            sudo systemctl start spark-worker.service
+            sleep 5
+            sudo systemctl enable spark-history-server.service
+            sudo systemctl start spark-history-server.service
+            sudo systemctl enable spark-connect-server.service
+            sudo systemctl start spark-connect-server.service || true
 
-            # Ensure ec2-user can run spark-submit (in PATH for jobs)
-            echo 'export PATH=/opt/spark/bin:/opt/spark/sbin:$PATH' | sudo tee -a /etc/profile.d/spark.sh
-            echo 'export SPARK_HOME=/opt/spark' | sudo tee -a /etc/profile.d/spark.sh
+            sudo -u ec2-user bash -c 'export HOME=/home/ec2-user && curl -s https://pyenv.run | bash'
+            echo 'export PYENV_ROOT="$HOME/.pyenv"' >> /home/ec2-user/.bashrc
+            echo 'command -v pyenv >/dev/null || export PATH="$PYENV_ROOT/bin:$PATH"' >> /home/ec2-user/.bashrc
+            echo 'eval "$(pyenv init -)"' >> /home/ec2-user/.bashrc
+            sudo -u ec2-user bash -c 'export HOME=/home/ec2-user PYENV_ROOT=/home/ec2-user/.pyenv PATH="/home/ec2-user/.pyenv/bin:$PATH" && eval "$(pyenv init -)" && pyenv install -s 3.11.9' 2>/dev/null || sudo -u ec2-user bash -c 'export HOME=/home/ec2-user PYENV_ROOT=/home/ec2-user/.pyenv PATH="/home/ec2-user/.pyenv/bin:$PATH" && eval "$(pyenv init -)" && pyenv install -s 3.11.6'
+            sudo -u ec2-user bash -c 'export HOME=/home/ec2-user PYENV_ROOT=/home/ec2-user/.pyenv PATH="/home/ec2-user/.pyenv/bin:$PATH" && eval "$(pyenv init -)" && pyenv global 3.11.9' 2>/dev/null || sudo -u ec2-user bash -c 'export HOME=/home/ec2-user PYENV_ROOT=/home/ec2-user/.pyenv PATH="/home/ec2-user/.pyenv/bin:$PATH" && eval "$(pyenv init -)" && pyenv global 3.11.6'
+            ln -sf /home/ec2-user/.pyenv/shims/python3 /usr/local/bin/python3-global
+            ln -sf /home/ec2-user/.pyenv/shims/pip3 /usr/local/bin/pip3-global
+            sudo -u ec2-user /home/ec2-user/.pyenv/shims/pip3 install --upgrade pip
+            sudo -u ec2-user /home/ec2-user/.pyenv/shims/pip3 install pyspark flask requests PyYAML cassandra-driver boto3 scylla-cqlsh scylla-driver
 
-            echo "EXTERNAL_HOST=$EXTERNAL_HOST" | sudo tee /etc/scylla-migrator.env
+            CASSANDRA_STRESS_VER=3.17.0
+            wget -q "https://github.com/scylladb/cassandra-stress/releases/download/v${!CASSANDRA_STRESS_VER}/cassandra-stress-${!CASSANDRA_STRESS_VER}-bin.tar.gz" -O /tmp/cassandra-stress.tar.gz
+            tar -xzf /tmp/cassandra-stress.tar.gz -C /opt
+            ln -sf /opt/cassandra-stress-${!CASSANDRA_STRESS_VER}/bin/cassandra-stress /usr/local/bin/cassandra-stress 2>/dev/null || true
+            rm -f /tmp/cassandra-stress.tar.gz
+
+            SCYLLA_BENCH_VER=1.0.0
+            wget -q "https://github.com/scylladb/scylla-bench/releases/download/v${!SCYLLA_BENCH_VER}/scylla-bench_${!SCYLLA_BENCH_VER}_linux_amd64.tar.gz" -O /tmp/scylla-bench.tar.gz
+            tar -xzf /tmp/scylla-bench.tar.gz -C /opt
+            ln -sf /opt/scylla-bench /usr/local/bin/scylla-bench 2>/dev/null || ln -sf /opt/scylla-bench_${!SCYLLA_BENCH_VER}_linux_amd64/scylla-bench /usr/local/bin/scylla-bench 2>/dev/null || true
+            rm -f /tmp/scylla-bench.tar.gz
+
+            mkdir -p "$(dirname ${!DEPLOY_DIR})"
+            if [ -n "${!REPO_URL}" ] && [ "${!REPO_URL}" != "none" ]; then
+              [ ! -d "${!DEPLOY_DIR}/.git" ] && git clone --depth 1 "${!REPO_URL}" "${!DEPLOY_DIR}" || true
+            fi
+            chown -R ec2-user:ec2-user "${!DEPLOY_DIR}" 2>/dev/null || true
+
+            cd "${!DEPLOY_DIR}" 2>/dev/null || { echo "Deploy dir not found"; exit 1; }
+            [ ! -f config.yaml ] && cp config.yaml.minimal config.yaml 2>/dev/null || touch config.yaml
+
+            JARS_DIR="${!DEPLOY_DIR}/migrator/target/scala-2.13"
+            mkdir -p "${!JARS_DIR}"
+
+            if [ -n "${!PREBUILT_BUCKET}" ] && [ -n "${!PREBUILT_KEY}" ]; then
+              aws s3 cp "s3://${!PREBUILT_BUCKET}/${!PREBUILT_KEY}" "${!JARS_DIR}/" 2>/dev/null || true
+            fi
+
+            if [ -z "$(ls -A ${!JARS_DIR}/*assembly*.jar 2>/dev/null)" ]; then
+              curl -sL "https://github.com/coursier/launchers/raw/master/cs-x86_64-pc-linux.gz" | gzip -d > /usr/local/bin/cs
+              chmod +x /usr/local/bin/cs
+              /usr/local/bin/cs install sbt 2>/dev/null || true
+              export PATH="/root/.local/share/coursier/bin:/usr/local/bin:$PATH"
+              sbt -batch migrator/assembly 2>&1 | tail -30
+              [ -z "$(ls -A ${!JARS_DIR}/*assembly*.jar 2>/dev/null)" ] && { echo "sbt build failed"; exit 1; }
+            fi
+            chown -R ec2-user:ec2-user "${!DEPLOY_DIR}" 2>/dev/null || true
+
+            ln -sf /home/ec2-user/spark /spark 2>/dev/null || true
+            ln -sf "${!DEPLOY_DIR}" /app 2>/dev/null || true
+            ln -sf "${!JARS_DIR}" /jars 2>/dev/null || true
+
+            cat > /etc/systemd/system/scylla-migrator-web.service << 'SVCEOF'
+            [Unit]
+            Description=Scylla Migrator Web App
+            After=network.target spark-master.service
+
+            [Service]
+            Type=simple
+            User=ec2-user
+            Group=ec2-user
+            WorkingDirectory=/home/ec2-user/scylla-migrator/web-app
+            EnvironmentFile=-/etc/scylla-migrator.env
+            Environment="SPARK_MASTER_HOST=localhost"
+            Environment="MIGRATOR_CONFIG_PATH=/home/ec2-user/scylla-migrator/config.yaml"
+            Environment="FLASK_APP=app.py"
+            Environment="PATH=/home/ec2-user/spark/bin:/home/ec2-user/spark/sbin:/usr/local/bin:/home/ec2-user/.pyenv/shims:/usr/bin"
+            ExecStart=/home/ec2-user/.pyenv/shims/python -m flask run --host=0.0.0.0 --port=5000
+            Restart=on-failure
+            RestartSec=10
+
+            [Install]
+            WantedBy=multi-user.target
+            SVCEOF
+            sudo systemctl daemon-reload
+            if [ -d "${!DEPLOY_DIR}/web-app" ]; then
+              sudo systemctl enable scylla-migrator-web
+              sudo systemctl start scylla-migrator-web
+            else
+              echo "WARNING: web-app not found in ${!DEPLOY_DIR}. Use RepoUrl parameter to point to a fork that includes web-app (e.g. your fork with web-app). Skipping web service."
+            fi
+
+            echo 'export PATH=/home/ec2-user/spark/bin:/home/ec2-user/spark/sbin:$PATH' >> /home/ec2-user/.bashrc
+            echo 'export SPARK_HOME=/home/ec2-user/spark' >> /home/ec2-user/.bashrc
+            echo 'export PATH=/home/ec2-user/spark/bin:/home/ec2-user/spark/sbin:$PATH' | tee -a /etc/profile.d/spark.sh
+            echo 'export SPARK_HOME=/home/ec2-user/spark' | tee -a /etc/profile.d/spark.sh
 
             echo "=== Bootstrap complete ==="
-            echo "Web app: http://${EXTERNAL_HOST}:5000"
-            echo "Spark Master: http://${EXTERNAL_HOST}:8080"
-            echo "Spark History: http://${EXTERNAL_HOST}:18080"
-            echo "Worker UI: http://${EXTERNAL_HOST}:8081"
+            echo "Web app: http://${!EXTERNAL_HOST}:5000"
+            echo "Spark Master: http://${!EXTERNAL_HOST}:8080"
+            echo "Spark History: http://${!EXTERNAL_HOST}:18080"
+            echo "Spark Worker: http://${!EXTERNAL_HOST}:8081"
+            echo "Spark Connect: sc://${!EXTERNAL_HOST}:15002"
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs:
@@ -295,17 +402,26 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-PublicIp'
   WebAppUrl:
-    Description: Web app URL
+    Description: Web app (Flask UI) - click to open
     Value: !Sub 'http://${MigratorInstance.PublicIp}:5000'
+    Export:
+      Name: !Sub '${AWS::StackName}-WebAppUrl'
   SparkMasterUrl:
-    Description: Spark Master UI
+    Description: Spark Master UI - click to open
     Value: !Sub 'http://${MigratorInstance.PublicIp}:8080'
+    Export:
+      Name: !Sub '${AWS::StackName}-SparkMasterUrl'
   SparkHistoryUrl:
-    Description: Spark History Server
+    Description: Spark History Server - click to open
     Value: !Sub 'http://${MigratorInstance.PublicIp}:18080'
+    Export:
+      Name: !Sub '${AWS::StackName}-SparkHistoryUrl'
   SshCommand:
     Description: SSH command
     Value: !Sub 'ssh -i <your-key.pem> ec2-user@${MigratorInstance.PublicIp}'
   SsmConnectCommand:
     Description: Connect via SSM
     Value: !Sub 'aws ssm start-session --target ${MigratorInstance}'
+  SparkConnectUrl:
+    Description: Spark Connect endpoint (sc://)
+    Value: !Sub 'sc://${MigratorInstance.PublicIp}:15002'
