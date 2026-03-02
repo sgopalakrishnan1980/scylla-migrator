@@ -1,6 +1,6 @@
 # Scylla Migrator - EC2 without Docker
 
-Deploys a single Amazon Linux EC2 instance with **SSM** (Session Manager), **Apache Spark 3.5.8 Standalone** (with Hadoop 3, Scala 2.13), **Spark Connect**, and the **Python Flask web app**. No Docker—everything runs natively via systemd services.
+Deploys a single Amazon Linux EC2 instance with **SSM** (Session Manager), **Apache Spark 3.5.8 Standalone** (with Hadoop 3, Scala 2.13), **Spark Connect**, and the **Python Flask web app**. No Docker—everything runs natively via systemd services under `ec2-user`.
 
 ## What gets installed
 
@@ -9,16 +9,42 @@ Deploys a single Amazon Linux EC2 instance with **SSM** (Session Manager), **Apa
 | Amazon Linux        | AL2023 (latest AMI)                                    |
 | Spark               | 3.5.8 (bin-hadoop3-scala2.13) from [Apache archive](https://archive.apache.org/dist/spark/) |
 | Spark Standalone    | Master (7077, UI 8080), Worker (8081), History (18080), Connect (15002) |
-| systemd services    | spark-master (autostart), spark-worker (depends on master), spark-history-server, spark-connect-server |
-| pyenv               | Python 3.11 (global)                                   |
-| PySpark + deps      | flask, requests, PyYAML, cassandra-driver, boto3        |
-| Migrator JAR        | Built with sbt, or provided via S3                     |
+| systemd services    | spark-master, spark-worker, spark-history-server, spark-connect-server, scylla-migrator-web |
+| Install location    | `/home/ec2-user/` — Spark, web-app, and repo all under ec2-user home |
+| pyenv               | Python 3.11 (in `/home/ec2-user/.pyenv`)              |
+| PySpark + deps      | flask, requests, PyYAML, cassandra-driver, boto3, scylla-cqlsh, scylla-driver |
+| Tools               | AWS CLI v2, cassandra-stress (3.17.0), scylla-bench (1.0.0) |
+| Migrator JAR        | Built with sbt from repo, or provided via S3           |
+
+## Instance profile & connectivity
+
+### SSM agent for connectivity
+
+The instance uses **AWS Systems Manager Session Manager (SSM)** for access—no SSH key or bastion host required. Ideal for instances in private subnets.
+
+- **Managed policy:** `AmazonSSMManagedInstanceCore` — enables SSM agent and Session Manager
+- **Connect:**
+  ```bash
+  aws ssm start-session --target <instance-id>
+  ```
+- The CloudFormation output `SsmConnectCommand` provides the full command.
+
+### DynamoDB access for source connections
+
+The instance profile includes **full DynamoDB access** so the migrator can connect to DynamoDB sources and run migrations from DynamoDB to Scylla Alternator.
+
+- **Policy:** `MigratorRoleDynamoDBPolicy` — `dynamodb:*` on `*`
+- No additional IAM setup needed for DynamoDB-based migrations.
+
+### S3 access (optional)
+
+When `PrebuiltJarBucket` and `PrebuiltJarKey` are set, the instance gets S3 read access for the specified bucket to download the pre-built migrator JAR.
 
 ## Prerequisites
 
 - AWS CLI configured
 - VPC and subnet with internet access
-- SSH key pair in the target region
+- SSH key pair in the target region (for EC2; SSM does not require it)
 - (Optional) Pre-built migrator JAR in S3 for faster bootstrap
 
 ## Deploy
@@ -43,7 +69,7 @@ aws cloudformation create-stack \
 | InstanceType       | m6i.4xlarge                            | Instance size (m6i/c6i variants)                 |
 | VpcCidrBlock       | 10.0.0.0/16                            | VPC CIDR for security group rules                |
 | AllowedCidr        | 0.0.0.0/0                              | CIDR allowed for web app and Spark UIs          |
-| RepoUrl            | github.com/scylladb/scylla-migrator    | Git repo URL                                     |
+| RepoUrl            | github.com/sgopalakrishnan1980/scylla-migrator | Git repo (must include web-app/)        |
 | PrebuiltJarBucket  | ''                                     | Optional S3 bucket for pre-built migrator JAR   |
 | PrebuiltJarKey     | ''                                     | Optional S3 key for pre-built migrator JAR      |
 
@@ -67,6 +93,45 @@ aws ssm start-session --target <instance-id>
 sudo tail -f /var/log/user-data.log
 ```
 
+### CloudFormation outputs
+
+The stack exposes clickable URLs:
+
+| Output          | Description                          |
+|-----------------|--------------------------------------|
+| WebAppUrl       | Web app (Flask UI) — http://\<ip\>:5000 |
+| SparkMasterUrl  | Spark Master UI — http://\<ip\>:8080 |
+| SparkHistoryUrl | Spark History Server — http://\<ip\>:18080 |
+| SparkConnectUrl | Spark Connect endpoint — sc://\<ip\>:15002 |
+| SsmConnectCommand | `aws ssm start-session --target <instance-id>` |
+| SshCommand      | SSH command (if using public IP)     |
+
+### Connect via SSM (recommended)
+
+```bash
+aws ssm start-session --target <instance-id>
+```
+
+### Service management
+
+All services run as `ec2-user`. You can manage them with:
+
+```bash
+sudo systemctl start scylla-migrator-web
+sudo systemctl restart spark-master
+# etc.
+```
+
+ec2-user has passwordless sudo for these service operations.
+
+| Service                | Unit name                    |
+|------------------------|------------------------------|
+| Web app                | scylla-migrator-web.service  |
+| Spark Master           | spark-master.service         |
+| Spark Worker           | spark-worker.service         |
+| Spark History Server   | spark-history-server.service |
+| Spark Connect Server   | spark-connect-server.service |
+
 ### URLs (replace `<public-ip>` with the instance public IP)
 
 | Service        | URL                        |
@@ -77,12 +142,13 @@ sudo tail -f /var/log/user-data.log
 | Spark Worker   | http://\<public-ip\>:8081  |
 | Spark Connect  | sc://\<public-ip\>:15002   |
 
-### Connect via SSM (no SSH key needed)
-
-```bash
-aws ssm start-session --target <instance-id>
-```
-
 ### Config
 
 Edit `/home/ec2-user/scylla-migrator/config.yaml` with your source and target settings.
+
+### Troubleshooting
+
+- **User-data / bootstrap:** `/var/log/user-data.log`, `/var/log/cloud-init-output.log`
+- **Service status:** `sudo systemctl status scylla-migrator-web`
+- **Service logs:** `sudo journalctl -u scylla-migrator-web -n 100`
+- **Web app not starting:** Ensure `RepoUrl` points to a repo that contains a `web-app/` directory; otherwise the service is skipped.
