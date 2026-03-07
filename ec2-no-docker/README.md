@@ -8,7 +8,7 @@ Deploys a single Amazon Linux EC2 instance with **SSM** (Session Manager), **Apa
 |---------------------|---------------------------------------------------------|
 | Amazon Linux        | AL2023 (latest AMI)                                    |
 | Spark               | 3.5.8 (bin-hadoop3-scala2.13) from [Apache archive](https://archive.apache.org/dist/spark/) |
-| Spark Standalone    | Master (7077, UI 8080), Worker (8081), History (18080), Connect (15002) |
+| Spark Standalone    | Master (7077, UI 8080), Worker (8081), History (18080), Connect (15002). Reverse proxy enabled. |
 | systemd services    | spark-master, spark-worker, spark-history-server, spark-connect-server, scylla-migrator-web |
 | Install location    | `/home/ec2-user/` — Spark, web-app, and repo all under ec2-user home |
 | pyenv               | Python 3.11 (in `/home/ec2-user/.pyenv`)              |
@@ -145,6 +145,29 @@ ec2-user has passwordless sudo for these service operations.
 ### Config
 
 Edit `/home/ec2-user/scylla-migrator/config.yaml` with your source and target settings.
+
+### Spark reverse proxy and external host
+
+Spark is configured for access via the instance’s public hostname:
+
+- **spark.ui.reverseProxy** — `true` on Master, Worker, and History Server
+- **spark.master.rest.host** — Set to the external host (Public DNS or IP)
+- **spark.history.ui.reverseProxyUrl** — `http://<host>:18080`
+- **SPARK_PUBLIC_DNS** — Set for all Spark daemons so worker UIs use the correct host
+
+These values are stored in `/etc/scylla-migrator-spark.env` and loaded by the Spark systemd services.
+
+### Delayed host update (~120 seconds)
+
+Public DNS may not be available immediately at bootstrap. A background job runs ~120 seconds after launch and:
+
+1. Fetches the instance’s Public DNS (or Public IP) via AWS EC2 API
+2. Updates `/etc/scylla-migrator.env` (EXTERNAL_HOST)
+3. Updates `/etc/scylla-migrator-spark.env` with the same host for Spark config
+4. Updates `scylla-migrator-web.service` with the new EXTERNAL_HOST
+5. Restarts the web app and all Spark daemons (master, worker, history server, connect server)
+
+Log output: `/var/log/external-host-update.log`
 
 ### Troubleshooting
 

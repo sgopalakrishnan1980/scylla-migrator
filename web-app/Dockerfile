@@ -15,7 +15,7 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-${D
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
+COPY app.py log4j2.properties log4j2-debug.properties ./
 COPY templates/ templates/
 
 RUN mkdir -p /app

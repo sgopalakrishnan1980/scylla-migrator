@@ -172,6 +172,8 @@ The migration ``target`` can be DynamoDB or Alternator. In both cases, we use th
 
 Where ``<table>`` should be replaced with your specific value.
 
+**Web app (this fork):** When source is DynamoDB and target is Alternator, the web UI exposes **Stream Changes** and **Skip Initial Snapshot Transfer** under the Alternator target section. You can enable these without editing the YAML manually.
+
 Additionally, you can also set the following optional properties:
 
 .. code-block:: yaml

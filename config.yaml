@@ -1,0 +1,20 @@
+source:
+  type: dynamodb
+  table: VideoLibrary
+  region: us-east-1
+  throughputReadPercent: 1.0
+target:
+  type: dynamodb
+  table: VideoLibrary
+  endpoint:
+    host: http://node-0.aws-us-west-2.29df97458983e57f3407.clusters.scylla.cloud
+    port: 8000
+  credentials:
+    accessKey: alternator
+    secretKey: $6$D9Cx.8Z.E6cEEgLc$w6SHpb6cwFI2RpLEpVn8NoYxRAvyJHMT65A6LGQDd6jZ/XYGgl1bEr8UmQbdlCeSotBsoOBVDyVzEZYrtrsXw.
+  throughputWritePercent: 1.0
+  streamChanges: false
+  removeConsumedCapacity: true
+savepoints:
+  path: /app/savepoints
+  intervalSeconds: 300

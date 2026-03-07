@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+import shlex
 import socket
 import subprocess
 from pathlib import Path
@@ -151,18 +152,74 @@ def _docker_network_gateway():
     return None
 
 
+def _is_internal_host(host: str) -> bool:
+    """True if hostname looks like internal/private (e.g. ip-10-0-1-50.ec2.internal)."""
+    if not host:
+        return False
+    h = host.lower()
+    return (
+        "internal" in h
+        or h.startswith("ip-10-")
+        or h.startswith("ip-172-")
+        or ".local" in h
+    )
+
+
+def _public_host_override_path() -> Path:
+    """Path to user-set public host override file (persists across restarts)."""
+    return (Path(CONFIG_PATH).resolve().parent / ".public-host")
+
+
 def _ui_base_host():
     """Host for browser-facing URLs (Spark UIs).
-    1. EXTERNAL_HOST (EC2 public IP) if set
-    2. Gateway from docker network inspect (host on bridge, for local Docker)
-    3. Request host (from Host header)
-    4. localhost
+    0. User override from .public-host file (set via Apply in UI)
+    1. EXTERNAL_HOST from /etc/scylla-migrator.env (EC2: picks up delayed-job updates)
+    2. EXTERNAL_HOST from env
+    3. If candidate is internal and request Host looks public, use request Host
+    4. Gateway from docker network inspect (host on bridge, for local Docker)
+    5. Request host (from Host header)
+    6. localhost
     """
     global _ui_host_cache
     if _ui_host_cache is not None:
         return _ui_host_cache
 
-    ext = os.environ.get("EXTERNAL_HOST", "").strip()
+    # User override from UI (Apply button)
+    override_path = _public_host_override_path()
+    if override_path.exists():
+        try:
+            host = override_path.read_text().strip()
+            if host:
+                _ui_host_cache = host
+                return host
+        except Exception:
+            pass
+
+    # EC2 no-docker: read file first so delayed describe-instances update is picked up
+    ext = ""
+    env_file = Path("/etc/scylla-migrator.env")
+    if env_file.exists():
+        try:
+            for line in env_file.read_text().splitlines():
+                line = line.strip()
+                if line.startswith("EXTERNAL_HOST="):
+                    ext = line.split("=", 1)[1].strip().strip("'\"").strip()
+                    break
+        except Exception:
+            pass
+    if not ext:
+        ext = os.environ.get("EXTERNAL_HOST", "").strip()
+
+    req_host = ""
+    if request and request.host:
+        req_host = request.host.split(":")[0].strip() or ""
+
+    # If EXTERNAL_HOST is internal (e.g. ip-10-0-1-50.ec2.internal) but user accessed via
+    # public URL, prefer request Host so Spark links work from the browser
+    if ext and _is_internal_host(ext) and req_host and not _is_internal_host(req_host):
+        _ui_host_cache = req_host
+        return req_host
+
     if ext:
         _ui_host_cache = ext
         return ext
@@ -172,11 +229,9 @@ def _ui_base_host():
         _ui_host_cache = gw
         return gw
 
-    if request and request.host:
-        h = request.host.split(":")[0]
-        if h:
-            _ui_host_cache = h
-            return h
+    if req_host:
+        _ui_host_cache = req_host
+        return req_host
 
     _ui_host_cache = "localhost"
     return "localhost"
@@ -191,9 +246,54 @@ def index():
         spark_master_url=f"http://{base}:{SPARK_MASTER_PORT}",
         spark_history_url=f"http://{base}:{SPARK_HISTORY_PORT}",
         spark_worker_url=f"http://{base}:{SPARK_WORKER_PORT}",
+        ui_base_host=base,
         standalone_mode=STANDALONE_MODE,
         config_path=CONFIG_PATH,
     )
+
+
+@app.route("/api/set-public-host", methods=["POST"])
+def set_public_host():
+    """Set public host/URL for Spark UI buttons. Overrides EXTERNAL_HOST."""
+    global _ui_host_cache
+    data = request.get_json() or {}
+    raw = (data.get("host") or data.get("url") or "").strip()
+    if not raw:
+        return jsonify({"success": False, "error": "Host or URL is required"}), 400
+    # Extract hostname: allow "http://host:port", "host:port", or "host"
+    try:
+        if raw.startswith("http://") or raw.startswith("https://"):
+            from urllib.parse import urlparse
+            parsed = urlparse(raw)
+            host = parsed.hostname or parsed.netloc.split(":")[0] or raw
+        else:
+            host = raw.split("/")[0].split(":")[0].strip() or raw
+        if not host:
+            return jsonify({"success": False, "error": "Invalid host"}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    try:
+        override_path = _public_host_override_path()
+        override_path.parent.mkdir(parents=True, exist_ok=True)
+        override_path.write_text(host)
+        _ui_host_cache = None
+        return jsonify({"success": True, "host": host})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/clear-public-host", methods=["POST"])
+def clear_public_host():
+    """Remove user override; revert to auto-detected EXTERNAL_HOST."""
+    global _ui_host_cache
+    try:
+        override_path = _public_host_override_path()
+        if override_path.exists():
+            override_path.unlink()
+        _ui_host_cache = None
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/config", methods=["GET"])
@@ -321,6 +421,8 @@ def parse_config():
             form["ddb_tgt_secretKey"] = creds.get("secretKey", "")
         form["tgt_removeConsumedCapacity"] = str(target.get("removeConsumedCapacity", True)).lower()
         form["alt_tgt_billingMode"] = target.get("billingMode", "PAY_PER_REQUEST")
+        form["alt_tgt_streamChanges"] = str(target.get("streamChanges", False)).lower()
+        form["alt_tgt_skipInitialSnapshotTransfer"] = str(target.get("skipInitialSnapshotTransfer", False)).lower()
     elif tgt_type == "alternator":
         ep = target.get("endpoint") or {}
         form["alt_tgt_endpoint_host"] = ep.get("host", "http://localhost") + (f":{ep.get('port', 8000)}" if ep.get("port") else "")
@@ -330,6 +432,8 @@ def parse_config():
         form["alt_tgt_secretKey"] = creds.get("secretKey", "")
         form["tgt_removeConsumedCapacity"] = str(target.get("removeConsumedCapacity", True)).lower()
         form["alt_tgt_billingMode"] = target.get("billingMode", "PAY_PER_REQUEST")
+        form["alt_tgt_streamChanges"] = str(target.get("streamChanges", False)).lower()
+        form["alt_tgt_skipInitialSnapshotTransfer"] = str(target.get("skipInitialSnapshotTransfer", False)).lower()
 
     form["savepoints_path"] = savepoints.get("path", "/app/savepoints")
     form["savepoints_interval"] = savepoints.get("intervalSeconds", 300)
@@ -520,8 +624,16 @@ def _build_create_table_payload(table: str, schema: dict, billing_mode: str = "P
     return payload
 
 
-def _build_create_table_cli(table: str, schema: dict, endpoint_url: str, billing_mode: str = "PAY_PER_REQUEST") -> str:
-    """Build aws dynamodb create-table CLI command."""
+def _build_create_table_cli(
+    table: str,
+    schema: dict,
+    endpoint_url: str,
+    billing_mode: str = "PAY_PER_REQUEST",
+    credentials: dict | None = None,
+) -> str:
+    """Build aws dynamodb create-table CLI command.
+    If credentials has accessKey/secretKey, prepends env vars for Alternator auth.
+    """
     ad = schema.get("AttributeDefinitions", [])
     ks = schema.get("KeySchema", [])
     ad_str = " ".join(f"AttributeName={a['AttributeName']},AttributeType={a['AttributeType']}" for a in ad)
@@ -537,7 +649,16 @@ def _build_create_table_cli(table: str, schema: dict, endpoint_url: str, billing
         parts.insert(-1, "  --provisioned-throughput ReadCapacityUnits=1,WriteCapacityUnits=1")
     else:
         parts.insert(-1, f"  --billing-mode {billing_mode}")
-    return " \\\n".join(parts)
+    cmd = " \\\n".join(parts)
+    creds = credentials or {}
+    access_key = (creds.get("accessKey") or "").strip()
+    secret_key = (creds.get("secretKey") or "").strip()
+    if access_key and secret_key:
+        # Escape for shell: use single quotes, escape single quotes in values
+        ak_esc = access_key.replace("'", "'\"'\"'")
+        sk_esc = secret_key.replace("'", "'\"'\"'")
+        cmd = f"AWS_ACCESS_KEY_ID='{ak_esc}' AWS_SECRET_ACCESS_KEY='{sk_esc}' " + cmd
+    return cmd
 
 
 def _test_tcp(host: str, port: int) -> tuple[bool, str]:
@@ -855,7 +976,7 @@ def test_access():
                     schema = _get_source_schema_for_create_table(cfg)
                     if schema:
                         target_result["createTableCommand"] = _build_create_table_cli(
-                            table, schema, endpoint_url, billing_mode
+                            table, schema, endpoint_url, billing_mode, credentials=creds
                         )
                         target_result["createTablePayload"] = _build_create_table_payload(
                             table, schema, billing_mode
@@ -954,6 +1075,19 @@ def save_config():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+def _get_spark_submit_cmd() -> str:
+    """Return path to spark-submit. Prefer SPARK_HOME/bin/spark-submit to avoid PySpark's bundled Spark."""
+    for candidate in [
+        os.environ.get("SPARK_HOME", "").strip(),
+        "/home/ec2-user/spark",  # EC2 no-docker default
+    ]:
+        if candidate:
+            path = Path(candidate) / "bin" / "spark-submit"
+            if path.exists():
+                return str(path)
+    return "spark-submit"
+
+
 def _run_spark_submit(cmd_extra: list, config_path: str) -> tuple[int, str, str]:
     """Run spark-submit. Uses docker exec spark-master if available, else local."""
     jars_dir = Path("/jars")
@@ -963,8 +1097,9 @@ def _run_spark_submit(cmd_extra: list, config_path: str) -> tuple[int, str, str]
     if not jar_files:
         raise FileNotFoundError("Migrator JAR not found. Build with: sbt migrator/assembly")
 
+    spark_submit = _get_spark_submit_cmd()
     base_cmd = [
-        "spark-submit",
+        spark_submit,
         "--class", "com.scylladb.migrator.Migrator",
         "--master", f"spark://{SPARK_MASTER_HOST}:7077",
         "--conf", f"spark.scylla.config={config_path}",
@@ -981,7 +1116,11 @@ def _run_spark_submit(cmd_extra: list, config_path: str) -> tuple[int, str, str]
             "Ensure docker socket is mounted and docker CLI is available."
         )
 
-    result = subprocess.run(base_cmd, capture_output=True, text=True, timeout=120)
+    env = os.environ.copy()
+    spark_submit_path = Path(spark_submit)
+    if spark_submit_path.is_absolute() and spark_submit_path.exists():
+        env.setdefault("SPARK_HOME", str(spark_submit_path.parent.parent))
+    result = subprocess.run(base_cmd, capture_output=True, text=True, timeout=120, env=env)
     return result.returncode, result.stdout, result.stderr
 
 
@@ -1129,7 +1268,7 @@ def _test_access_impl(cfg: dict) -> dict:
                     schema = _get_source_schema_for_create_table(cfg)
                     if schema:
                         target_result["createTableCommand"] = _build_create_table_cli(
-                            table, schema, endpoint_url, billing_mode
+                            table, schema, endpoint_url, billing_mode, credentials=creds
                         )
                         target_result["createTablePayload"] = _build_create_table_payload(
                             table, schema, billing_mode
@@ -1149,6 +1288,126 @@ def _test_access_impl(cfg: dict) -> dict:
     return results
 
 
+@app.route("/config/create-table-command", methods=["POST"])
+def create_table_command():
+    """Return AWS CLI create-table command for Alternator target when source is DynamoDB.
+    Called when source=dynamodb, target=alternator and target details are entered.
+    Uses target accessKey/secretKey from config when provided.
+    """
+    data = request.get_json() or {}
+    content = data.get("content", "")
+    if not content:
+        return jsonify({"success": False, "error": "No config content"}), 400
+    try:
+        cfg = yaml.safe_load(content)
+    except yaml.YAMLError as e:
+        return jsonify({"success": False, "error": f"Invalid YAML: {str(e)}"}), 400
+    source = cfg.get("source", {})
+    target = cfg.get("target", {})
+    src_type = (source.get("type") or "").lower()
+    tgt_type = (target.get("type") or "").lower()
+    if tgt_type == "dynamodb" and target.get("endpoint"):
+        tgt_type = "alternator"
+    if src_type not in ("dynamodb", "dynamo") or tgt_type != "alternator":
+        return jsonify({
+            "success": False,
+            "error": "Create table command is for source=DynamoDB and target=Alternator only",
+        }), 400
+    ep = target.get("endpoint") or {}
+    host = (ep.get("host") or "").strip()
+    port = int(ep.get("port", 8000))
+    table = (target.get("table") or "").strip()
+    if not host or not table:
+        return jsonify({
+            "success": False,
+            "error": "Target Alternator endpoint URL and table name are required",
+        }), 400
+    base = host if host.startswith("http") else f"http://{host}"
+    endpoint_url = f"{base.rstrip('/')}:{port}" if port else base.rstrip("/")
+    billing_mode = (target.get("billingMode") or "PAY_PER_REQUEST").strip() or "PAY_PER_REQUEST"
+    creds = target.get("credentials", {}) or {}
+    schema = _get_source_schema_for_create_table(cfg)
+    if not schema:
+        return jsonify({
+            "success": False,
+            "error": "Could not fetch schema from DynamoDB source. Ensure source table, region, and credentials are set.",
+        }), 400
+    cmd = _build_create_table_cli(table, schema, endpoint_url, billing_mode, credentials=creds)
+    payload = _build_create_table_payload(table, schema, billing_mode)
+    return jsonify({
+        "success": True,
+        "command": cmd,
+        "createTablePayload": payload,
+        "createTableEndpoint": endpoint_url,
+    })
+
+
+def _build_spark_submit_cmd(config_path: str, debug: bool) -> tuple[list, str]:
+    """Build spark-submit command. Returns (base_cmd list, cmd_str)."""
+    config_path = str(Path(config_path).resolve())
+    if not Path(config_path).exists():
+        raise FileNotFoundError(f"Config not found: {config_path}")
+
+    jars_dir = Path("/jars")
+    if not jars_dir.exists():
+        jars_dir = Path("/app/migrator/target/scala-2.13")
+    jar_files = list(jars_dir.glob("*assembly*.jar"))
+    if not jar_files:
+        raise FileNotFoundError("Migrator JAR not found")
+    jar_path = str(Path(jar_files[0]).resolve())
+
+    spark_submit = _get_spark_submit_cmd()
+    event_log_dir = os.environ.get("SPARK_EVENTS", "file:/tmp/spark-events")
+    if not event_log_dir.startswith("file:"):
+        event_log_dir = f"file:{event_log_dir}"
+    config_dir = Path(config_path).parent
+    log4j_path = config_dir / "web-app" / "log4j2.properties"
+    if not log4j_path.exists():
+        log4j_path = Path("/app/web-app/log4j2.properties")
+    if not log4j_path.exists():
+        log4j_path = Path(__file__).parent / "log4j2.properties"
+    log4j_conf = (
+        f"-Dlog4j2.configurationFile=file:{log4j_path.resolve()}"
+        if log4j_path.exists()
+        else "-Dlog4j2.configurationFile=file:/spark/conf/log4j2-debug.properties"
+    )
+    if debug:
+        log4j_conf = "-Dlog4j2.configurationFile=file:/spark/conf/log4j2-debug.properties"
+    base_cmd = [
+        spark_submit,
+        "--class", "com.scylladb.migrator.Migrator",
+        "--master", f"spark://{SPARK_MASTER_HOST}:7077",
+        "--executor-cores", "2",
+        "--executor-memory", "4G",
+        "--conf", "spark.eventLog.enabled=true",
+        "--conf", f"spark.eventLog.dir={event_log_dir}",
+        "--conf", f"spark.scylla.config={config_path}",
+        "--conf", "spark.hadoop.dynamodb.returnConsumedCapacity=NONE",
+        "--driver-java-options", log4j_conf,
+        "--conf", f"spark.executor.extraJavaOptions={log4j_conf}",
+        jar_path,
+    ]
+    cmd_str = " ".join(shlex.quote(arg) for arg in base_cmd)
+    return base_cmd, cmd_str
+
+
+@app.route("/jobs/preview", methods=["POST"])
+def preview_job():
+    """Return the spark-submit command that would be run, without submitting."""
+    if STANDALONE_MODE:
+        return jsonify({"success": False, "error": "Job submission requires the full stack (Spark)."}), 400
+    data = request.get_json() or {}
+    config_path = data.get("config_path", CONFIG_PATH)
+    debug = data.get("debug", False)
+    try:
+        base_cmd, cmd_str = _build_spark_submit_cmd(config_path, debug)
+        return jsonify({"success": True, "command": cmd_str, "args": base_cmd})
+    except FileNotFoundError as e:
+        return jsonify({"success": False, "error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/jobs/submit", methods=["POST"])
 def submit_job():
     """Submit migration job via spark-submit (runs in background)."""
@@ -1158,49 +1417,48 @@ def submit_job():
     config_path = data.get("config_path", CONFIG_PATH)
     debug = data.get("debug", False)
 
-    if not Path(config_path).exists():
-        return jsonify({"success": False, "error": f"Config not found: {config_path}"}), 404
-
-    jars_dir = Path("/jars")
-    if not jars_dir.exists():
-        jars_dir = Path("/app/migrator/target/scala-2.13")
-    jar_files = list(jars_dir.glob("*assembly*.jar"))
-    if not jar_files:
-        return jsonify({"success": False, "error": "Migrator JAR not found"}), 500
-
-    base_cmd = [
-        "spark-submit",
-        "--class", "com.scylladb.migrator.Migrator",
-        "--master", f"spark://{SPARK_MASTER_HOST}:7077",
-        "--conf", "spark.eventLog.enabled=true",
-        "--conf", "spark.eventLog.dir=file:/tmp/spark-events",
-        "--conf", f"spark.scylla.config={config_path}",
-    ]
-    if debug:
-        log4j_conf = "-Dlog4j2.configurationFile=file:/spark/conf/log4j2-debug.properties"
-        base_cmd.extend([
-            "--conf", f"spark.driver.extraJavaOptions={log4j_conf}",
-            "--conf", f"spark.executor.extraJavaOptions={log4j_conf}",
-        ])
-    base_cmd.append(str(jar_files[0]))
+    try:
+        base_cmd, cmd_str = _build_spark_submit_cmd(config_path, debug)
+        config_path_resolved = str(Path(config_path).resolve())
+    except FileNotFoundError as e:
+        return jsonify({"success": False, "error": str(e)}), 404
 
     if os.environ.get("USE_DOCKER_EXEC") and Path("/var/run/docker.sock").exists():
         res = _docker_exec("spark-master", base_cmd, detach=True)
         if res is not None:
-            return jsonify({"success": True, "message": "Job submitted", "pid": 0})
+            return jsonify({
+                "success": True,
+                "message": "Job submitted",
+                "pid": 0,
+                "command": cmd_str,
+                "args": base_cmd,
+            })
         return jsonify({
             "success": False,
             "error": "Unable to run spark-submit in spark-master. Ensure docker socket is mounted and docker CLI is available.",
         }), 500
 
     try:
+        env = os.environ.copy()
+        spark_submit = base_cmd[0]
+        if Path(spark_submit).is_absolute() and Path(spark_submit).exists():
+            env.setdefault("SPARK_HOME", str(Path(spark_submit).parent.parent))
+        config_dir = str(Path(config_path_resolved).parent)
         proc = subprocess.Popen(
             base_cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=env,
+            cwd=config_dir,
         )
-        return jsonify({"success": True, "message": "Job submitted", "pid": proc.pid})
+        return jsonify({
+            "success": True,
+            "message": "Job submitted",
+            "pid": proc.pid,
+            "command": cmd_str,
+            "args": base_cmd,
+        })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

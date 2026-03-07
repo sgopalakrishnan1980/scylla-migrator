@@ -23,8 +23,10 @@ This is a **fork** of the [ScyllaDB Migrator](https://github.com/scylladb/scylla
 - **Config whitespace verification** — Detects tabs and trailing spaces in config YAML that can cause Spark errors.
 - **Source/target access checks** — UI-driven connectivity tests for CQL, Parquet, DynamoDB, S3, and Alternator before migration.
 - **CreateTable via UI** — Execute DynamoDB CreateTable against Alternator from the web app (e.g., for table-not-found recovery).
+- **DynamoDB stream changes** — Web app UI for `streamChanges` and `skipInitialSnapshotTransfer` when migrating from DynamoDB to Alternator (replicate ongoing changes via DynamoDB Streams).
 - **Known-issues workarounds** — In-app guidance for common Alternator and DynamoDB S3 export issues (see scylla-migrator GitHub issues).
 - **EC2 deployment** — CloudFormation and Terraform; `docker-compose.ec2.yml` runs Spark + web app only (config, Spark setup, web UI). No Alternator; connect to your own target. See `docs/EC2-DEPLOYMENT.md`.
+- **EC2 no-docker** — `ec2-no-docker/` deploys native Spark + web app (no Docker). Spark configured for reverse proxy (`spark.ui.reverseProxy`, `spark.master.rest.host`, `spark.history.ui.reverseProxyUrl`, `SPARK_PUBLIC_DNS`). A delayed job (~60s) updates the external host when Public DNS becomes available and restarts the web app and Spark daemons. See `ec2-no-docker/README.md`.
 - **SSM Session Manager access** — Connect to EC2 via `aws ssm start-session --target <instance-id>` or SSH-over-SSM (no keys, no port 22). See [SSM / SSH-over-SSM](docs/EC2-DEPLOYMENT.md#ssm--ssh-over-ssm).
 
 ---
@@ -33,6 +35,7 @@ This is a **fork** of the [ScyllaDB Migrator](https://github.com/scylladb/scylla
 
 - **Upstream docs:** https://migrator.docs.scylladb.com
 - **EC2 deployment (this fork):** [docs/EC2-DEPLOYMENT.md](docs/EC2-DEPLOYMENT.md) — CloudFormation, Terraform, SSM access
+- **EC2 no-docker:** [ec2-no-docker/README.md](ec2-no-docker/README.md) — Native Spark + web app, no Docker; Spark reverse proxy, delayed host update
 
 ## Config Creator (Standalone)
 

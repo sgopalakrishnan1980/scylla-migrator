@@ -6,6 +6,8 @@ Instead of terminating immediately after having copied a snapshot of the source 
 
 It works by enabling, on the source table, a `DynamoDB Stream <https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html>`_ that emits the changed items data each time an application creates, updates, or deletes data in the source table.
 
+**Web app (this fork):** When source is DynamoDB and target is Alternator, the web UI exposes **Stream Changes** and **Skip Initial Snapshot Transfer** options under the Alternator target section.
+
 Enable this feature by setting the property ``streamChanges`` to ``true`` in the target database configuration:
 
 .. code-block:: yaml

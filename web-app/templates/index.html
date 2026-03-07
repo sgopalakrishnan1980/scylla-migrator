@@ -34,6 +34,20 @@
 </head>
 <body>
   <h1>Scylla Migrator - Config Creator</h1>
+
+  {% if not standalone_mode %}
+  <div class="card" style="margin-bottom:1rem;">
+    <h2 style="margin-top:0;">Public URL for Spark UIs</h2>
+    <p style="margin:0.5rem 0; font-size:0.9rem; color:#666;">Override the host used for Spark Master, History, and Worker links. Use your instance public DNS (e.g. ec2-x-x-x-x.compute.amazonaws.com) or IP.</p>
+    <div class="form-row" style="display:flex; flex-wrap:wrap; align-items:center; gap:0.5rem;">
+      <input type="text" id="publicHostInput" placeholder="ec2-x-x-x-x.compute.amazonaws.com or 1.2.3.4" value="{{ ui_base_host or '' }}" style="max-width:400px; flex:1; min-width:200px;">
+      <button class="btn" onclick="applyPublicHost()">Apply</button>
+      <a href="#" onclick="clearPublicHost(event)" style="font-size:0.9rem; color:#666;">Reset to auto</a>
+      <span id="publicHostStatus" style="font-size:0.9rem; color:#060;"></span>
+    </div>
+  </div>
+  {% endif %}
+
   {% if standalone_mode %}
   <p style="background:#e8f4fc; padding:0.75rem; border-radius:4px; margin-bottom:1rem;">
     <strong>Standalone mode</strong> — Config creation only. Use Verify Whitespace, Check Endpoints, and Save/Download. 
@@ -52,6 +66,9 @@
 
   <div class="card">
     <h2>Create Configuration</h2>
+    <p style="margin-bottom:1rem;">
+      <button class="btn btn-secondary" onclick="clearAllAndStartFresh()" title="Reset all form fields to defaults">Clear All / Start Fresh</button>
+    </p>
 
     <div class="form-row">
       <label>Source Type</label>
@@ -396,6 +413,33 @@
         </select>
         <small style="color:#666;">If PROVISIONED: create table manually with <code>--provisioned-throughput ReadCapacityUnits=1,WriteCapacityUnits=1</code> for Alternator 2025.1+.</small>
       </div>
+      <div id="alt_tgt_streamChangesSection" class="form-row" style="display:none;">
+        <label>Stream Changes</label>
+        <div class="radio-group">
+          <label><input type="radio" name="alt_tgt_streamChanges" value="false" checked> No</label>
+          <label><input type="radio" name="alt_tgt_streamChanges" value="true"> Yes</label>
+        </div>
+        <small style="color:#666;">When source is DynamoDB: replicate ongoing changes via DynamoDB Streams after the initial snapshot. Migrator runs until stopped (Ctrl+C).</small>
+      </div>
+      <div id="alt_tgt_skipSnapshotSection" class="form-row" style="display:none;">
+        <label>Skip Initial Snapshot Transfer</label>
+        <div class="radio-group">
+          <label><input type="radio" name="alt_tgt_skipInitialSnapshotTransfer" value="false" checked> No</label>
+          <label><input type="radio" name="alt_tgt_skipInitialSnapshotTransfer" value="true"> Yes</label>
+        </div>
+        <small style="color:#666;">Only when Stream Changes is Yes: skip the initial table copy and only replicate changes from now on.</small>
+      </div>
+      <div id="createTableCmdSection" class="form-row" style="display:none; margin-top:1rem; padding:1rem; background:#f8f9fa; border-radius:4px;">
+        <h4 style="margin-top:0;">AWS CLI: Create Alternator Table</h4>
+        <p><small style="color:#666;">Source DynamoDB → Target Alternator. Enter target details above, then get the command. Access Key and Secret Key are included when entered.</small></p>
+        <p><button class="btn" id="getCreateTableCmdBtn" onclick="fetchCreateTableCommand()">Get Create Table Command</button></p>
+        <pre id="createTableCmdDisplay" style="background:#fff; padding:0.75rem; overflow-x:auto; font-size:0.85rem; border:1px solid #ddd; display:none;"></pre>
+        <div id="createTableCmdError" style="color:#c00; font-size:0.9rem; display:none;"></div>
+        <p id="createTableCmdActions" style="display:none; margin-top:0.5rem;">
+          <button class="btn" onclick="copyCreateTableCmdFromSection(event)">Copy command</button>
+          <button class="btn" onclick="executeCreateTable()">Execute Create Table</button>
+        </p>
+      </div>
     </div>
 
     <!-- Savepoints -->
@@ -465,6 +509,7 @@
       <small style="color:#666;">When checked, Spark driver and executors use DEBUG log level. View logs in Worker Logs and Spark UI.</small>
     </div>
     <p><button class="btn" onclick="submitJob()">Submit Migration Job</button></p>
+    <p><small style="color:#666;">Worker Logs show the Spark executor process. The Migrator (driver) runs with the config and JAR shown in the command above. Check Spark Master UI for driver status.</small></p>
     <div id="jobStatus"></div>
   </div>
 
@@ -477,6 +522,117 @@
 
   <script>
     const configPath = '{{ config_path | default("/app/config.yaml") }}';
+
+    const FORM_DEFAULTS = {
+      sourceType: 'cassandra', targetType: 'scylla',
+      src_host: 'cassandra-host', src_port: 9042, src_keyspace: 'keyspace', src_table: 'table',
+      src_username: '', src_password: '',
+      parquet_path: 's3a://bucket/path', parquet_region: 'us-east-1',
+      parquet_accessKey: '', parquet_secretKey: '', parquet_sessionToken: '', parquet_assumeRoleArn: '', parquet_sessionName: '',
+      ddb_src_table: 'mytable', ddb_src_region: 'us-east-1',
+      ddb_src_accessKey: '', ddb_src_secretKey: '', ddb_src_sessionToken: '', ddb_src_assumeRoleArn: '', ddb_src_sessionName: '',
+      alt_src_table: 'mytable', alt_src_endpoint_host: 'http://scylla-node1:8000',
+      alt_src_accessKey: '', alt_src_secretKey: '', alt_src_sessionToken: '', alt_src_assumeRoleArn: '', alt_src_sessionName: '',
+      s3_bucket: 'my-bucket', s3_manifest: 'export/manifest-summary.json', s3_region: 'us-east-1', s3_pk_name: 'id', s3_pk_type: 'S',
+      s3_accessKey: '', s3_secretKey: '', s3_sessionToken: '', s3_assumeRoleArn: '', s3_sessionName: '',
+      tgt_host: 'scylla-node1', tgt_port: 9042, tgt_keyspace: 'keyspace', tgt_table: 'table',
+      tgt_username: '', tgt_password: '',
+      ddb_tgt_table: 'mytable', ddb_tgt_region: 'us-east-1',
+      ddb_tgt_accessKey: '', ddb_tgt_secretKey: '', ddb_tgt_sessionToken: '', ddb_tgt_assumeRoleArn: '', ddb_tgt_sessionName: '',
+      alt_tgt_table: 'mytable', alt_tgt_endpoint_host: 'http://scylla-node1:8000', alt_tgt_billingMode: '',
+      alt_tgt_accessKey: '', alt_tgt_secretKey: '', alt_tgt_sessionToken: '', alt_tgt_assumeRoleArn: '', alt_tgt_sessionName: '',
+      savepoints_path: '/app/savepoints', savepoints_interval: 300
+    };
+    const RADIO_DEFAULTS = {
+      src_consistency: 'LOCAL_QUORUM', src_preserveTimestamps: 'false',
+      tgt_consistency: 'LOCAL_QUORUM', tgt_stripZeros: 'false',
+      tgt_removeConsumedCapacity: 'true',
+      alt_tgt_streamChanges: 'false', alt_tgt_skipInitialSnapshotTransfer: 'false'
+    };
+
+    async function applyPublicHost() {
+      const input = document.getElementById('publicHostInput');
+      const status = document.getElementById('publicHostStatus');
+      if (!input) return;
+      const val = input.value.trim();
+      if (!val) {
+        status.textContent = 'Enter a host or URL';
+        status.style.color = '#c00';
+        return;
+      }
+      status.textContent = 'Applying...';
+      status.style.color = '#666';
+      try {
+        const r = await fetch('/api/set-public-host', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ host: val })
+        });
+        const d = await r.json();
+        if (d.success) {
+          status.textContent = 'Applied. Reloading...';
+          status.style.color = '#060';
+          window.location.reload();
+        } else {
+          status.textContent = 'Error: ' + (d.error || 'Failed');
+          status.style.color = '#c00';
+        }
+      } catch (e) {
+        status.textContent = 'Error: ' + e.message;
+        status.style.color = '#c00';
+      }
+    }
+
+    async function clearPublicHost(ev) {
+      ev.preventDefault();
+      const status = document.getElementById('publicHostStatus');
+      status.textContent = 'Clearing...';
+      status.style.color = '#666';
+      try {
+        const r = await fetch('/api/clear-public-host', { method: 'POST' });
+        const d = await r.json();
+        if (d.success) {
+          status.textContent = 'Cleared. Reloading...';
+          status.style.color = '#060';
+          window.location.reload();
+        } else {
+          status.textContent = 'Error: ' + (d.error || 'Failed');
+          status.style.color = '#c00';
+        }
+      } catch (e) {
+        status.textContent = 'Error: ' + e.message;
+        status.style.color = '#c00';
+      }
+    }
+
+    function clearAllAndStartFresh() {
+      if (!confirm('Clear all form values and start fresh? This will reset the entire form.')) return;
+      for (const [id, value] of Object.entries(FORM_DEFAULTS)) {
+        const el = document.getElementById(id);
+        if (el) {
+          if (el.type === 'radio') {
+            const match = document.querySelector(`input[name="${el.name}"][value="${value}"]`);
+            if (match) match.checked = true;
+          } else if (el.type === 'checkbox') {
+            el.checked = false;
+          } else {
+            el.value = value;
+          }
+        }
+      }
+      for (const [name, value] of Object.entries(RADIO_DEFAULTS)) {
+        const match = document.querySelector(`input[name="${name}"][value="${value}"]`);
+        if (match) match.checked = true;
+      }
+      document.getElementById('debugLogging').checked = false;
+      const createDisplay = document.getElementById('createTableCmdDisplay');
+      if (createDisplay) { createDisplay.textContent = ''; createDisplay.style.display = 'none'; }
+      const createActions = document.getElementById('createTableCmdActions');
+      if (createActions) createActions.style.display = 'none';
+      const createError = document.getElementById('createTableCmdError');
+      if (createError) { createError.textContent = ''; createError.style.display = 'none'; }
+      onSourceTargetChange();
+    }
 
     const VALID_COMBOS = {
       cassandra: ['scylla'],
@@ -500,6 +656,32 @@
       document.querySelectorAll('.section').forEach(el => el.classList.remove('visible'));
       document.getElementById('source-' + src)?.classList.add('visible');
       document.getElementById('target-' + tgtSelect.value)?.classList.add('visible');
+      const createSection = document.getElementById('createTableCmdSection');
+      if (createSection) {
+        createSection.style.display = (src === 'dynamodb' && tgtSelect.value === 'alternator') ? 'block' : 'none';
+      }
+      const streamSection = document.getElementById('alt_tgt_streamChangesSection');
+      const skipSection = document.getElementById('alt_tgt_skipSnapshotSection');
+      const showStream = (src === 'dynamodb' && tgtSelect.value === 'alternator');
+      if (streamSection) streamSection.style.display = showStream ? 'block' : 'none';
+      if (skipSection) skipSection.style.display = showStream ? 'block' : 'none';
+    }
+
+    function setupCreateTableCmdListeners() {
+      let refreshTimeout = null;
+      function debouncedRefresh() {
+        clearTimeout(refreshTimeout);
+        refreshTimeout = setTimeout(() => {
+          if (document.getElementById('createTableCmdDisplay')?.style.display === 'block') {
+            fetchCreateTableCommand();
+          }
+        }, 500);
+      }
+      ['alt_tgt_accessKey', 'alt_tgt_secretKey', 'alt_tgt_endpoint_host', 'alt_tgt_table', 'alt_tgt_billingMode', 'ddb_src_table', 'ddb_src_region', 'ddb_src_accessKey', 'ddb_src_secretKey'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', debouncedRefresh);
+        if (el) el.addEventListener('change', debouncedRefresh);
+      });
     }
 
     function parseEndpointUrl(url) {
@@ -626,6 +808,9 @@
         const removeCap = document.querySelector('input[name="tgt_removeConsumedCapacity"]:checked')?.value === 'true';
         const billingMode = document.getElementById('alt_tgt_billingMode').value;
         const billingLine = billingMode ? `\n  billingMode: ${billingMode}` : '';
+        const streamChanges = document.querySelector('input[name="alt_tgt_streamChanges"]:checked')?.value === 'true';
+        const skipSnapshot = document.querySelector('input[name="alt_tgt_skipInitialSnapshotTransfer"]:checked')?.value === 'true';
+        const skipLine = (streamChanges && skipSnapshot) ? '\n  skipInitialSnapshotTransfer: true' : '';
         yaml += `target:
   type: dynamodb
   table: ${document.getElementById('alt_tgt_table').value.trim()}
@@ -633,8 +818,8 @@
     host: ${host}
     port: ${port}${creds}
   throughputWritePercent: 1.0
-  streamChanges: false
-  removeConsumedCapacity: ${removeCap}${billingLine}
+  streamChanges: ${streamChanges}
+  removeConsumedCapacity: ${removeCap}${skipLine}${billingLine}
 `;
       }
 
@@ -688,6 +873,54 @@
           }
         });
       }
+    }
+
+    function copyCreateTableCmdFromSection(ev) {
+      const pre = document.getElementById('createTableCmdDisplay');
+      if (pre) {
+        navigator.clipboard.writeText(pre.textContent).then(() => {
+          const btn = ev?.target;
+          if (btn) {
+            const orig = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(() => { btn.textContent = orig; }, 1500);
+          }
+        });
+      }
+    }
+
+    async function fetchCreateTableCommand() {
+      const btn = document.getElementById('getCreateTableCmdBtn');
+      const display = document.getElementById('createTableCmdDisplay');
+      const errEl = document.getElementById('createTableCmdError');
+      const actions = document.getElementById('createTableCmdActions');
+      display.style.display = 'none';
+      errEl.style.display = 'none';
+      errEl.textContent = '';
+      if (btn) { btn.disabled = true; btn.textContent = 'Fetching...'; }
+      const yaml = buildYaml(false);
+      try {
+        const r = await fetch('/config/create-table-command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: yaml })
+        });
+        const d = await r.json();
+        if (d.success && d.command) {
+          display.textContent = d.command;
+          display.style.display = 'block';
+          actions.style.display = 'block';
+          lastCreateTablePayload = d.createTablePayload || null;
+          lastCreateTableEndpoint = d.createTableEndpoint || null;
+        } else {
+          errEl.textContent = d.error || 'Failed to get command';
+          errEl.style.display = 'block';
+        }
+      } catch (e) {
+        errEl.textContent = 'Error: ' + e.message;
+        errEl.style.display = 'block';
+      }
+      if (btn) { btn.disabled = false; btn.textContent = 'Get Create Table Command'; }
     }
 
     async function executeCreateTable() {
@@ -909,17 +1142,44 @@
     async function submitJob() {
       const status = document.getElementById('jobStatus');
       const debug = document.getElementById('debugLogging').checked;
+      const payload = { config_path: configPath, debug: debug };
       try {
+        status.innerHTML = '<span style="color:#666;">Fetching command...</span>';
+        const previewR = await fetch('/jobs/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const previewD = await previewR.json();
+        if (!previewD.success) {
+          status.innerHTML = '<span class="error">' + (previewD.error || 'Preview failed') + '</span>';
+          return;
+        }
+        const cmdDisplay = previewD.command ? escapeHtml(previewD.command) : '(command not available)';
+        const updatePause = (sec) => {
+          status.innerHTML = '<div><strong>Job submission (command &amp; arguments):</strong></div>' +
+            '<pre style="margin-top:0.5rem; padding:0.75rem; background:#f5f5f5; overflow-x:auto; font-size:0.85rem; white-space:pre-wrap; word-break:break-all;">' + cmdDisplay + '</pre>' +
+            '<div style="margin-top:0.5rem;"><span style="color:#666;">' + (sec > 0 ? 'Pausing ' + sec + ' seconds...' : 'Submitting...') + '</span></div>';
+        };
+        updatePause(30);
+        for (let s = 29; s >= 0; s--) {
+          await new Promise(r => setTimeout(r, 1000));
+          updatePause(s);
+        }
         const r = await fetch('/jobs/submit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ config_path: configPath, debug: debug })
+          body: JSON.stringify(payload)
         });
         const d = await r.json();
         if (d.success) {
-          status.innerHTML = '<span class="success">Job submitted (PID: ' + d.pid + '). Check Spark Master UI.</span>';
+          status.innerHTML = '<div><strong>Job submission (command &amp; arguments):</strong></div>' +
+            '<pre style="margin-top:0.5rem; padding:0.75rem; background:#f5f5f5; overflow-x:auto; font-size:0.85rem; white-space:pre-wrap; word-break:break-all;">' + (d.command ? escapeHtml(d.command) : cmdDisplay) + '</pre>' +
+            '<div style="margin-top:0.5rem;"><span class="success">Job submitted (PID: ' + d.pid + '). Check Spark Master UI.</span></div>';
         } else {
-          status.innerHTML = '<span class="error">' + (d.error || 'Submit failed') + '</span>';
+          status.innerHTML = '<div><strong>Command (preview):</strong></div>' +
+            '<pre style="margin-top:0.5rem; padding:0.75rem; background:#f5f5f5; overflow-x:auto; font-size:0.85rem;">' + cmdDisplay + '</pre>' +
+            '<div style="margin-top:0.5rem;"><span class="error">' + (d.error || 'Submit failed') + '</span></div>';
         }
       } catch (e) {
         status.innerHTML = '<span class="error">' + e.message + '</span>';
@@ -942,6 +1202,7 @@
     }
 
     onSourceTargetChange();
+    setupCreateTableCmdListeners();
   </script>
 </body>
 </html>

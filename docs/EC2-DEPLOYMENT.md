@@ -140,6 +140,12 @@ If using a **custom IamInstanceProfile**, add `AmazonSSMManagedInstanceCore` to 
 
 ---
 
+## Alternative: EC2 without Docker
+
+For native Spark (no Docker) on Amazon Linux with systemd services, see [ec2-no-docker/README.md](../ec2-no-docker/README.md). That deployment configures Spark with reverse proxy support and a delayed job to update the external host when Public DNS becomes available.
+
+---
+
 ## Customization
 
 - **Custom repo**: Set `REPO_URL` (CloudFormation/Terraform) or in user data
