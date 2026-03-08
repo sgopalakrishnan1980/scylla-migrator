@@ -216,7 +216,7 @@
       <div class="form-row">
         <label>Endpoint URL</label>
         <input type="text" id="alt_src_endpoint_host" placeholder="http://scylla-node1:8000" value="http://scylla-node1:8000">
-        <small style="color:#666;">Include protocol and port, e.g. http://host:8000</small>
+        <small style="color:#666;">Include protocol and port, e.g. http://host:8000. Use IP address instead of FQDN for non-public clustersfor best results (avoids DNS resolution issues).</small>
       </div>
       <div class="form-row">
         <label>Access Key (optional)</label>
@@ -374,7 +374,7 @@
       <div class="form-row">
         <label>Endpoint URL</label>
         <input type="text" id="alt_tgt_endpoint_host" placeholder="http://scylla-node1:8000" value="http://scylla-node1:8000">
-        <small style="color:#666;">Include protocol and port, e.g. http://host:8000</small>
+        <small style="color:#666;">Include protocol and port, e.g. http://host:8000. Use IP address instead of FQDN for best results (avoids DNS resolution issues).</small>
       </div>
       <div class="form-row">
         <label>Access Key (optional)</label>
@@ -431,7 +431,7 @@
       </div>
       <div id="createTableCmdSection" class="form-row" style="display:none; margin-top:1rem; padding:1rem; background:#f8f9fa; border-radius:4px;">
         <h4 style="margin-top:0;">AWS CLI: Create Alternator Table</h4>
-        <p><small style="color:#666;">Source DynamoDB → Target Alternator. Enter target details above, then get the command. Access Key and Secret Key are included when entered.</small></p>
+        <p><small style="color:#666;">Source DynamoDB → Target Alternator. Enter target details above, then get the command. Access Key and Secret Key are included when entered. Use IP address instead of FQDN in the target endpoint URL for best results.</small></p>
         <p><button class="btn" id="getCreateTableCmdBtn" onclick="fetchCreateTableCommand()">Get Create Table Command</button></p>
         <pre id="createTableCmdDisplay" style="background:#fff; padding:0.75rem; overflow-x:auto; font-size:0.85rem; border:1px solid #ddd; display:none;"></pre>
         <div id="createTableCmdError" style="color:#c00; font-size:0.9rem; display:none;"></div>
@@ -1156,8 +1156,10 @@
           return;
         }
         const cmdDisplay = previewD.command ? escapeHtml(previewD.command) : '(command not available)';
+        const methodLabel = (previewD.submit_method === 'livy') ? 'Via Livy REST API' : (previewD.submit_method === 'docker_exec') ? 'Via Docker (spark-master container)' : 'Via local spark-submit';
+        const submissionHeading = '<div><strong>Submission:</strong> ' + escapeHtml(methodLabel) + '</div><div style="margin-top:0.25rem;"><strong>Command / request:</strong></div>';
         const updatePause = (sec) => {
-          status.innerHTML = '<div><strong>Job submission (command &amp; arguments):</strong></div>' +
+          status.innerHTML = submissionHeading +
             '<pre style="margin-top:0.5rem; padding:0.75rem; background:#f5f5f5; overflow-x:auto; font-size:0.85rem; white-space:pre-wrap; word-break:break-all;">' + cmdDisplay + '</pre>' +
             '<div style="margin-top:0.5rem;"><span style="color:#666;">' + (sec > 0 ? 'Pausing ' + sec + ' seconds...' : 'Submitting...') + '</span></div>';
         };
@@ -1174,11 +1176,12 @@
         const d = await r.json();
         if (d.success) {
           const batchLabel = (d.batch_id != null) ? ('Batch ID: ' + d.batch_id + '. ') : ('PID: ' + d.pid + '. ');
-          status.innerHTML = '<div><strong>Job submission (command &amp; arguments):</strong></div>' +
-            '<pre style="margin-top:0.5rem; padding:0.75rem; background:#f5f5f5; overflow-x:auto; font-size:0.85rem; white-space:pre-wrap; word-break:break-all;">' + (d.command ? escapeHtml(d.command) : cmdDisplay) + '</pre>' +
+          const successCmd = d.command ? escapeHtml(d.command) : cmdDisplay;
+          status.innerHTML = submissionHeading +
+            '<pre style="margin-top:0.5rem; padding:0.75rem; background:#f5f5f5; overflow-x:auto; font-size:0.85rem; white-space:pre-wrap; word-break:break-all;">' + successCmd + '</pre>' +
             '<div style="margin-top:0.5rem;"><span class="success">Job submitted (' + batchLabel + 'Check Spark Master UI or Livy.)</span></div>';
         } else {
-          status.innerHTML = '<div><strong>Command (preview):</strong></div>' +
+          status.innerHTML = submissionHeading +
             '<pre style="margin-top:0.5rem; padding:0.75rem; background:#f5f5f5; overflow-x:auto; font-size:0.85rem;">' + cmdDisplay + '</pre>' +
             '<div style="margin-top:0.5rem;"><span class="error">' + (d.error || 'Submit failed') + '</span></div>';
         }

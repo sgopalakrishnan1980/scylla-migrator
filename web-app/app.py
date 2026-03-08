@@ -35,6 +35,15 @@ SPARK_WORKER_PORT = 8081
 STANDALONE_MODE = os.environ.get("STANDALONE_MODE", "").lower() in ("1", "true", "yes")
 SPARK_NETWORK_FILTER = os.environ.get("SPARK_NETWORK_FILTER", "scylla-migrator")
 
+# Java 17+ module access for Spark (sun.nio.ch.DirectBuffer etc.)
+JAVA17_ADD_OPENS = (
+    "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED "
+    "--add-opens=java.base/java.util=ALL-UNNAMED "
+    "--add-opens=java.base/java.nio=ALL-UNNAMED "
+    "--add-opens=java.base/java.lang=ALL-UNNAMED "
+    "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED"
+)
+
 _ui_host_cache = None
 _docker_client = None
 
@@ -588,25 +597,28 @@ def _get_source_schema_for_create_table(cfg: dict) -> dict | None:
         ok, schema, _ = _describe_alternator_table(url, table)
         if ok and schema:
             return schema
-        # Try AWS DynamoDB if no endpoint
+        # Try AWS DynamoDB if no endpoint or DynamoDB endpoint
         if not host or "amazonaws.com" in host:
             creds = source.get("credentials", {}) or {}
             assume = (creds.get("assumeRole") or {}) if isinstance(creds.get("assumeRole"), dict) else None
             region = source.get("region", "us-east-1")
-            if creds.get("accessKey") and creds.get("secretKey"):
-                ok, _, session = _get_aws_credentials(creds, assume)
-                if ok and session:
-                    try:
-                        import boto3
+            try:
+                import boto3
+                if creds.get("accessKey") and creds.get("secretKey"):
+                    ok, _, session = _get_aws_credentials(creds, assume)
+                    if ok and session:
                         client = session.client("dynamodb", region_name=region)
-                        desc = client.describe_table(TableName=table)
-                        tbl = desc.get("Table", {})
-                        return {
-                            "AttributeDefinitions": tbl.get("AttributeDefinitions", []),
-                            "KeySchema": tbl.get("KeySchema", []),
-                        }
-                    except Exception:
-                        pass
+                else:
+                    # Use default credential chain (instance profile on EC2, env vars, etc.)
+                    client = boto3.client("dynamodb", region_name=region)
+                desc = client.describe_table(TableName=table)
+                tbl = desc.get("Table", {})
+                return {
+                    "AttributeDefinitions": tbl.get("AttributeDefinitions", []),
+                    "KeySchema": tbl.get("KeySchema", []),
+                }
+            except Exception:
+                pass
         return None
 
     return None
@@ -1384,8 +1396,8 @@ def _build_spark_submit_cmd(config_path: str, debug: bool) -> tuple[list, str]:
         "--conf", f"spark.eventLog.dir={event_log_dir}",
         "--conf", f"spark.scylla.config={config_path}",
         "--conf", "spark.hadoop.dynamodb.returnConsumedCapacity=NONE",
-        "--driver-java-options", log4j_conf,
-        "--conf", f"spark.executor.extraJavaOptions={log4j_conf}",
+        "--driver-java-options", f"{JAVA17_ADD_OPENS} {log4j_conf}",
+        "--conf", f"spark.executor.extraJavaOptions={JAVA17_ADD_OPENS} {log4j_conf}",
         jar_path,
     ]
     cmd_str = " ".join(shlex.quote(arg) for arg in base_cmd)
@@ -1413,17 +1425,21 @@ def _livy_submit(config_path: str, jar_path: str, debug: bool) -> dict:
     )
     if debug:
         log4j_conf = "-Dlog4j2.configurationFile=file:/spark/conf/log4j2-debug.properties"
+    # Livy requires local paths to be under livy.file.local-dir-whitelist; use local:/ so cluster mode finds the file
+    file_arg = jar_path
+    if not file_arg.startswith(("local:", "file:", "http:", "hdfs:")):
+        file_arg = f"local:{jar_path}"
     payload = {
-        "file": f"file://{jar_path}",
+        "file": file_arg,
         "className": "com.scylladb.migrator.Migrator",
-        "args": [],
+        "args": [config_path],
         "conf": {
             "spark.eventLog.enabled": "true",
             "spark.eventLog.dir": event_log_dir,
             "spark.scylla.config": config_path,
             "spark.hadoop.dynamodb.returnConsumedCapacity": "NONE",
-            "spark.executor.extraJavaOptions": log4j_conf,
-            "spark.driver.extraJavaOptions": log4j_conf,
+            "spark.executor.extraJavaOptions": f"{JAVA17_ADD_OPENS} {log4j_conf}",
+            "spark.driver.extraJavaOptions": f"{JAVA17_ADD_OPENS} {log4j_conf}",
         },
         "executorMemory": "4G",
         "executorCores": 2,
@@ -1453,17 +1469,50 @@ def _livy_batch_status(batch_id: int) -> dict | None:
         return None
 
 
+def _job_submit_preview(config_path: str, debug: bool) -> tuple[str, str, list]:
+    """Determine how job would be submitted and return (submit_method, command_display, base_cmd).
+    submit_method is one of 'livy', 'docker_exec', 'subprocess'. Matches logic in submit_job()."""
+    base_cmd, cmd_str = _build_spark_submit_cmd(config_path, debug)
+    config_path_resolved = str(Path(config_path).resolve())
+    jars_dir = Path("/jars") if Path("/jars").exists() else Path("/app/migrator/target/scala-2.13")
+    jar_files = list(jars_dir.glob("*assembly*.jar"))
+    jar_path = str(Path(jar_files[0]).resolve()) if jar_files else ""
+
+    if LIVY_URL and jar_path:
+        file_arg = f"local:{jar_path}" if not jar_path.startswith(("local:", "file:", "http:", "hdfs:")) else jar_path
+        command_display = (
+            f"Submitting via Livy REST API (POST {LIVY_URL}/batches)\n"
+            f"  file: {file_arg}\n"
+            f"  className: com.scylladb.migrator.Migrator\n"
+            f"  args: [{config_path_resolved}]\n"
+            f"  executorMemory: 4G, executorCores: 2\n"
+            f"(Livy will run the equivalent Spark job on the cluster.)"
+        )
+        return "livy", command_display, base_cmd
+
+    if os.environ.get("USE_DOCKER_EXEC") and Path("/var/run/docker.sock").exists():
+        command_display = f"Running in spark-master container:\n{cmd_str}"
+        return "docker_exec", command_display, base_cmd
+
+    return "subprocess", cmd_str, base_cmd
+
+
 @app.route("/jobs/preview", methods=["POST"])
 def preview_job():
-    """Return the spark-submit command that would be run, without submitting."""
+    """Return the command/preview for how the job would be submitted (Livy, docker exec, or subprocess)."""
     if STANDALONE_MODE:
         return jsonify({"success": False, "error": "Job submission requires the full stack (Spark)."}), 400
     data = request.get_json() or {}
     config_path = data.get("config_path", CONFIG_PATH)
     debug = data.get("debug", False)
     try:
-        base_cmd, cmd_str = _build_spark_submit_cmd(config_path, debug)
-        return jsonify({"success": True, "command": cmd_str, "args": base_cmd})
+        submit_method, command_display, base_cmd = _job_submit_preview(config_path, debug)
+        return jsonify({
+            "success": True,
+            "command": command_display,
+            "args": base_cmd,
+            "submit_method": submit_method,
+        })
     except FileNotFoundError as e:
         return jsonify({"success": False, "error": str(e)}), 404
     except Exception as e:

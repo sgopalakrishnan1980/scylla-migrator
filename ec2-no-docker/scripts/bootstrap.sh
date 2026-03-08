@@ -172,6 +172,8 @@ livy.spark.master = spark://localhost:7077
 livy.spark.deploy-mode = cluster
 livy.server.port = 8998
 livy.server.host = 0.0.0.0
+# Allow local JAR paths (migrator JAR under deploy dir or /jars)
+livy.file.local-dir-whitelist = /home/ec2-user,/jars,/app
 LIVYCONF
 chown -R ec2-user:ec2-user "$LIVY_HOME"
 
