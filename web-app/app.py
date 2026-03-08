@@ -28,6 +28,7 @@ if os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true", "yes"):
 
 CONFIG_PATH = os.environ.get("MIGRATOR_CONFIG_PATH", "/app/config.yaml")
 SPARK_MASTER_HOST = os.environ.get("SPARK_MASTER_HOST", "spark-master")
+LIVY_URL = (os.environ.get("LIVY_URL") or "").rstrip("/")
 SPARK_HISTORY_PORT = 18080
 SPARK_MASTER_PORT = 8080
 SPARK_WORKER_PORT = 8081
@@ -1391,6 +1392,67 @@ def _build_spark_submit_cmd(config_path: str, debug: bool) -> tuple[list, str]:
     return base_cmd, cmd_str
 
 
+def _livy_submit(config_path: str, jar_path: str, debug: bool) -> dict:
+    """Submit a batch job via Livy REST API. Returns dict with id, state, or error."""
+    if not LIVY_URL:
+        return {}
+    config_path = str(Path(config_path).resolve())
+    event_log_dir = os.environ.get("SPARK_EVENTS", "file:/tmp/spark-events")
+    if not event_log_dir.startswith("file:"):
+        event_log_dir = f"file:{event_log_dir}"
+    config_dir = Path(config_path).parent
+    log4j_path = config_dir / "web-app" / "log4j2.properties"
+    if not log4j_path.exists():
+        log4j_path = Path("/app/web-app/log4j2.properties")
+    if not log4j_path.exists():
+        log4j_path = Path(__file__).parent / "log4j2.properties"
+    log4j_conf = (
+        f"-Dlog4j2.configurationFile=file:{log4j_path.resolve()}"
+        if log4j_path.exists()
+        else "-Dlog4j2.configurationFile=file:/spark/conf/log4j2-debug.properties"
+    )
+    if debug:
+        log4j_conf = "-Dlog4j2.configurationFile=file:/spark/conf/log4j2-debug.properties"
+    payload = {
+        "file": f"file://{jar_path}",
+        "className": "com.scylladb.migrator.Migrator",
+        "args": [],
+        "conf": {
+            "spark.eventLog.enabled": "true",
+            "spark.eventLog.dir": event_log_dir,
+            "spark.scylla.config": config_path,
+            "spark.hadoop.dynamodb.returnConsumedCapacity": "NONE",
+            "spark.executor.extraJavaOptions": log4j_conf,
+            "spark.driver.extraJavaOptions": log4j_conf,
+        },
+        "executorMemory": "4G",
+        "executorCores": 2,
+    }
+    try:
+        r = requests.post(
+            f"{LIVY_URL}/batches",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=60,
+        )
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException as e:
+        return {"error": str(e), "response": getattr(e.response, "text", "") if hasattr(e, "response") else ""}
+
+
+def _livy_batch_status(batch_id: int) -> dict | None:
+    """Get batch status from Livy. Returns batch dict or None on error."""
+    if not LIVY_URL or batch_id is None:
+        return None
+    try:
+        r = requests.get(f"{LIVY_URL}/batches/{batch_id}", timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException:
+        return None
+
+
 @app.route("/jobs/preview", methods=["POST"])
 def preview_job():
     """Return the spark-submit command that would be run, without submitting."""
@@ -1420,8 +1482,29 @@ def submit_job():
     try:
         base_cmd, cmd_str = _build_spark_submit_cmd(config_path, debug)
         config_path_resolved = str(Path(config_path).resolve())
+        jars_dir = Path("/jars") if Path("/jars").exists() else Path("/app/migrator/target/scala-2.13")
+        jar_files = list(jars_dir.glob("*assembly*.jar"))
+        jar_path = str(Path(jar_files[0]).resolve()) if jar_files else ""
     except FileNotFoundError as e:
         return jsonify({"success": False, "error": str(e)}), 404
+
+    if LIVY_URL and jar_path:
+        livy_res = _livy_submit(config_path_resolved, jar_path, debug)
+        if "error" in livy_res:
+            return jsonify({
+                "success": False,
+                "error": f"Livy submit failed: {livy_res.get('error', '')}",
+                "command": cmd_str,
+            }), 500
+        batch_id = livy_res.get("id")
+        return jsonify({
+            "success": True,
+            "message": "Job submitted via Livy",
+            "batch_id": batch_id,
+            "pid": batch_id,
+            "command": cmd_str,
+            "args": base_cmd,
+        })
 
     if os.environ.get("USE_DOCKER_EXEC") and Path("/var/run/docker.sock").exists():
         res = _docker_exec("spark-master", base_cmd, detach=True)
@@ -1461,6 +1544,23 @@ def submit_job():
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/jobs/batch/<int:batch_id>")
+def job_batch_status(batch_id: int):
+    """Return Livy batch status (state, appId, log). Used when job was submitted via Livy."""
+    if not LIVY_URL:
+        return jsonify({"success": False, "error": "Livy not configured"}), 400
+    info = _livy_batch_status(batch_id)
+    if info is None:
+        return jsonify({"success": False, "error": "Batch not found or Livy unavailable"}), 404
+    return jsonify({
+        "success": True,
+        "batch_id": batch_id,
+        "state": info.get("state"),
+        "appId": info.get("appId"),
+        "appInfo": info.get("appInfo"),
+    })
 
 
 @app.route("/api/network-mapping")
@@ -1529,13 +1629,16 @@ def network_mapping():
 
 @app.route("/jobs/status")
 def jobs_status():
-    """Return link to Spark History Server for job status."""
+    """Return links to Spark UIs and Livy for job status."""
     base = _ui_base_host()
-    return jsonify({
+    out = {
         "history_url": f"http://{base}:{SPARK_HISTORY_PORT}",
         "master_url": f"http://{base}:{SPARK_MASTER_PORT}",
         "worker_url": f"http://{base}:{SPARK_WORKER_PORT}",
-    })
+    }
+    if LIVY_URL:
+        out["livy_url"] = f"http://{base}:8998"
+    return jsonify(out)
 
 
 @app.route("/logs/worker")

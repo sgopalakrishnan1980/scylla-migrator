@@ -9,7 +9,8 @@ Deploys a single Amazon Linux EC2 instance with **SSM** (Session Manager), **Apa
 | Amazon Linux        | AL2023 (latest AMI)                                    |
 | Spark               | 3.5.8 (bin-hadoop3-scala2.13) from [Apache archive](https://archive.apache.org/dist/spark/) |
 | Spark Standalone    | Master (7077, UI 8080), Worker (8081), History (18080), Connect (15002). Reverse proxy enabled. |
-| systemd services    | spark-master, spark-worker, spark-history-server, spark-connect-server, scylla-migrator-web |
+| Apache Livy         | 0.8.0-incubating (port 8998). Submits Spark batch jobs via REST; depends on Spark master/worker and restarts with them. |
+| systemd services    | spark-master, spark-worker, spark-history-server, spark-connect-server, livy, scylla-migrator-web |
 | Install location    | `/home/ec2-user/` — Spark, web-app, and repo all under ec2-user home |
 | pyenv               | Python 3.11 (in `/home/ec2-user/.pyenv`)              |
 | PySpark + deps      | flask, requests, PyYAML, cassandra-driver, boto3, scylla-cqlsh, scylla-driver |
@@ -72,6 +73,7 @@ aws cloudformation create-stack \
 | RepoUrl            | github.com/sgopalakrishnan1980/scylla-migrator | Git repo (must include web-app/)        |
 | PrebuiltJarBucket  | ''                                     | Optional S3 bucket for pre-built migrator JAR   |
 | PrebuiltJarKey     | ''                                     | Optional S3 key for pre-built migrator JAR      |
+| BootstrapScriptUrl | (raw GitHub main)                      | URL of bootstrap script; UserData stays under 16KB by fetching this script. Override for forks/branches. |
 
 ### Faster bootstrap with pre-built JAR
 
@@ -103,6 +105,7 @@ The stack exposes clickable URLs:
 | SparkMasterUrl  | Spark Master UI — http://\<ip\>:8080 |
 | SparkHistoryUrl | Spark History Server — http://\<ip\>:18080 |
 | SparkConnectUrl | Spark Connect endpoint — sc://\<ip\>:15002 |
+| LivyUrl         | Apache Livy REST API — http://\<ip\>:8998 (job submission) |
 | SsmConnectCommand | `aws ssm start-session --target <instance-id>` |
 | SshCommand      | SSH command (if using public IP)     |
 
@@ -131,6 +134,7 @@ ec2-user has passwordless sudo for these service operations.
 | Spark Worker           | spark-worker.service         |
 | Spark History Server   | spark-history-server.service |
 | Spark Connect Server   | spark-connect-server.service |
+| Apache Livy            | livy.service (starts after Spark worker; restarts with worker) |
 
 ### URLs (replace `<public-ip>` with the instance public IP)
 
@@ -141,6 +145,11 @@ ec2-user has passwordless sudo for these service operations.
 | Spark History  | http://\<public-ip\>:18080 |
 | Spark Worker   | http://\<public-ip\>:8081  |
 | Spark Connect  | sc://\<public-ip\>:15002   |
+| Apache Livy    | http://\<public-ip\>:8998  |
+
+### Job submission (Livy)
+
+The web app submits migration jobs via **Apache Livy** REST API instead of a local spark-submit subprocess. When `LIVY_URL` is set (e.g. `http://127.0.0.1:8998`), the UI uses `POST /batches` to submit and you can query status with `GET /jobs/batch/<batch_id>`. UserData is kept under the 16KB limit by downloading the full bootstrap from `BootstrapScriptUrl`.
 
 ### Config
 

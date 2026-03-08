@@ -1173,9 +1173,10 @@
         });
         const d = await r.json();
         if (d.success) {
+          const batchLabel = (d.batch_id != null) ? ('Batch ID: ' + d.batch_id + '. ') : ('PID: ' + d.pid + '. ');
           status.innerHTML = '<div><strong>Job submission (command &amp; arguments):</strong></div>' +
             '<pre style="margin-top:0.5rem; padding:0.75rem; background:#f5f5f5; overflow-x:auto; font-size:0.85rem; white-space:pre-wrap; word-break:break-all;">' + (d.command ? escapeHtml(d.command) : cmdDisplay) + '</pre>' +
-            '<div style="margin-top:0.5rem;"><span class="success">Job submitted (PID: ' + d.pid + '). Check Spark Master UI.</span></div>';
+            '<div style="margin-top:0.5rem;"><span class="success">Job submitted (' + batchLabel + 'Check Spark Master UI or Livy.)</span></div>';
         } else {
           status.innerHTML = '<div><strong>Command (preview):</strong></div>' +
             '<pre style="margin-top:0.5rem; padding:0.75rem; background:#f5f5f5; overflow-x:auto; font-size:0.85rem;">' + cmdDisplay + '</pre>' +
