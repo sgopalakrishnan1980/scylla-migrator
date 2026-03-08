@@ -76,6 +76,7 @@ Wants=network.target
 Type=simple
 User=ec2-user
 Group=ec2-user
+TimeoutStartSec=300
 EnvironmentFile=-/etc/scylla-migrator-spark.env
 Environment="JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64"
 Environment="SPARK_HOME=/home/ec2-user/spark"
@@ -98,6 +99,7 @@ Requires=spark-master.service
 Type=simple
 User=ec2-user
 Group=ec2-user
+TimeoutStartSec=300
 EnvironmentFile=-/etc/scylla-migrator-spark.env
 Environment="JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64"
 Environment="SPARK_HOME=/home/ec2-user/spark"
@@ -105,7 +107,7 @@ Environment="SPARK_PID_DIR=/home/ec2-user/spark-pids"
 ExecStart=/home/ec2-user/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://localhost:7077 --host 0.0.0.0 --webui-port 8081
 Restart=on-failure
 RestartSec=10
-ExecStartPost=+/bin/systemctl start livy.service
+ExecStartPost=/bin/bash -c 'sleep 15 && /bin/systemctl start livy.service || true'
 
 [Install]
 WantedBy=multi-user.target
@@ -159,9 +161,10 @@ wget -q "$LIVY_URL" -O /tmp/livy.zip
 unzip -q -o /tmp/livy.zip -d /tmp
 mv "/tmp/apache-livy-${LIVY_VERSION}_${LIVY_SCALA}-bin" "$LIVY_HOME"
 rm /tmp/livy.zip
-mkdir -p "$LIVY_HOME/logs"
+mkdir -p "$LIVY_HOME/logs" "$LIVY_HOME/run"
 [ -f "$LIVY_HOME/conf/livy.conf.template" ] && [ ! -f "$LIVY_HOME/conf/livy.conf" ] && cp "$LIVY_HOME/conf/livy.conf.template" "$LIVY_HOME/conf/livy.conf"
 touch "$LIVY_HOME/conf/livy.conf"
+chmod +x "$LIVY_HOME/bin/livy-server" 2>/dev/null || true
 cat >> "$LIVY_HOME/conf/livy.conf" << LIVYCONF
 
 # Spark Standalone
@@ -183,9 +186,13 @@ BindsTo=spark-worker.service
 Type=simple
 User=ec2-user
 Group=ec2-user
+WorkingDirectory=/opt/livy
 Environment="JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto.x86_64"
 Environment="SPARK_HOME=/home/ec2-user/spark"
 Environment="LIVY_HOME=/opt/livy"
+Environment="LIVY_CONF_DIR=/opt/livy/conf"
+Environment="LIVY_PID_DIR=/opt/livy/run"
+TimeoutStartSec=120
 ExecStart=/opt/livy/bin/livy-server
 Restart=on-failure
 RestartSec=10
@@ -199,13 +206,13 @@ chmod 440 /etc/sudoers.d/scylla-migrator
 
 sudo systemctl daemon-reload
 sudo systemctl enable spark-master.service
-sudo systemctl start spark-master.service
-sleep 15
+sudo systemctl start spark-master.service || { echo "WARNING: spark-master start failed."; }
+sleep 20
 sudo systemctl enable spark-worker.service
-sudo systemctl start spark-worker.service
+sudo systemctl start spark-worker.service || { echo "WARNING: spark-worker start failed or timed out; run 'sudo systemctl start spark-worker.service' after bootstrap."; }
 sleep 5
 sudo systemctl enable spark-history-server.service
-sudo systemctl start spark-history-server.service
+sudo systemctl start spark-history-server.service || true
 sudo systemctl enable spark-connect-server.service
 sudo systemctl start spark-connect-server.service || true
 sudo systemctl enable livy.service
