@@ -1425,10 +1425,11 @@ def _livy_submit(config_path: str, jar_path: str, debug: bool) -> dict:
     )
     if debug:
         log4j_conf = "-Dlog4j2.configurationFile=file:/spark/conf/log4j2-debug.properties"
-    # Livy requires local paths to be under livy.file.local-dir-whitelist; use local:/ so cluster mode finds the file
+    # Use file:// so Spark/Hadoop can resolve the path (Hadoop has no FileSystem for "local" scheme).
+    # Livy's livy.file.local-dir-whitelist allows local files; file:// is passed to Spark as-is.
     file_arg = jar_path
     if not file_arg.startswith(("local:", "file:", "http:", "hdfs:")):
-        file_arg = f"local:{jar_path}"
+        file_arg = f"file://{jar_path}"
     payload = {
         "file": file_arg,
         "className": "com.scylladb.migrator.Migrator",
@@ -1479,7 +1480,7 @@ def _job_submit_preview(config_path: str, debug: bool) -> tuple[str, str, list]:
     jar_path = str(Path(jar_files[0]).resolve()) if jar_files else ""
 
     if LIVY_URL and jar_path:
-        file_arg = f"local:{jar_path}" if not jar_path.startswith(("local:", "file:", "http:", "hdfs:")) else jar_path
+        file_arg = f"file://{jar_path}" if not jar_path.startswith(("local:", "file:", "http:", "hdfs:")) else jar_path
         command_display = (
             f"Submitting via Livy REST API (POST {LIVY_URL}/batches)\n"
             f"  file: {file_arg}\n"
@@ -1529,7 +1530,8 @@ def submit_job():
     debug = data.get("debug", False)
 
     try:
-        base_cmd, cmd_str = _build_spark_submit_cmd(config_path, debug)
+        submit_method, command_display, base_cmd = _job_submit_preview(config_path, debug)
+        _, cmd_str = _build_spark_submit_cmd(config_path, debug)
         config_path_resolved = str(Path(config_path).resolve())
         jars_dir = Path("/jars") if Path("/jars").exists() else Path("/app/migrator/target/scala-2.13")
         jar_files = list(jars_dir.glob("*assembly*.jar"))
@@ -1543,7 +1545,8 @@ def submit_job():
             return jsonify({
                 "success": False,
                 "error": f"Livy submit failed: {livy_res.get('error', '')}",
-                "command": cmd_str,
+                "command": command_display,
+                "submit_method": submit_method,
             }), 500
         batch_id = livy_res.get("id")
         return jsonify({
@@ -1551,8 +1554,9 @@ def submit_job():
             "message": "Job submitted via Livy",
             "batch_id": batch_id,
             "pid": batch_id,
-            "command": cmd_str,
+            "command": command_display,
             "args": base_cmd,
+            "submit_method": submit_method,
         })
 
     if os.environ.get("USE_DOCKER_EXEC") and Path("/var/run/docker.sock").exists():
@@ -1562,12 +1566,15 @@ def submit_job():
                 "success": True,
                 "message": "Job submitted",
                 "pid": 0,
-                "command": cmd_str,
+                "command": command_display,
                 "args": base_cmd,
+                "submit_method": submit_method,
             })
         return jsonify({
             "success": False,
             "error": "Unable to run spark-submit in spark-master. Ensure docker socket is mounted and docker CLI is available.",
+            "command": command_display,
+            "submit_method": submit_method,
         }), 500
 
     try:
@@ -1588,8 +1595,9 @@ def submit_job():
             "success": True,
             "message": "Job submitted",
             "pid": proc.pid,
-            "command": cmd_str,
+            "command": command_display,
             "args": base_cmd,
+            "submit_method": submit_method,
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
