@@ -85,6 +85,7 @@
       <label>Target Type</label>
       <select id="targetType" onchange="onSourceTargetChange()">
         <option value="scylla">ScyllaDB (CQL)</option>
+        <option value="parquet">S3 - Parquet</option>
         <option value="dynamodb">DynamoDB (AWS)</option>
         <option value="alternator">Alternator</option>
       </select>
@@ -364,6 +365,44 @@
       </div>
     </div>
 
+    <!-- Target: Parquet -->
+    <div id="target-parquet" class="section">
+      <h3>Target - S3 Parquet</h3>
+      <div class="form-row">
+        <label>Path (s3a://bucket/path or /local/path)</label>
+        <input type="text" id="parquet_tgt_path" placeholder="s3a://bucket/path" value="s3a://bucket/path">
+      </div>
+      <div class="form-row">
+        <label>Region (optional, for S3)</label>
+        <input type="text" id="parquet_tgt_region" placeholder="us-east-1" value="us-east-1">
+      </div>
+      <div class="form-row">
+        <label>Target File Size (MB)</label>
+        <input type="number" id="parquet_tgt_fileSizeMB" value="128" min="1">
+        <small style="color:#666;">Files are targeted to 128MB. The migrator auto-tunes split count and connections from Scylla shard count when source values are not explicitly set.</small>
+      </div>
+      <div class="form-row">
+        <label>Access Key (optional)</label>
+        <input type="text" id="parquet_tgt_accessKey" placeholder="Leave empty for default/instance profile">
+      </div>
+      <div class="form-row">
+        <label>Secret Key (optional)</label>
+        <input type="password" id="parquet_tgt_secretKey" placeholder="Leave empty for default/instance profile">
+      </div>
+      <div class="form-row">
+        <label>Session Token (optional, endpoint checks only)</label>
+        <textarea id="parquet_tgt_sessionToken" rows="2" placeholder="For endpoint checks only; not saved in config" style="width:100%; max-width:400px; padding:0.4rem; font-family:monospace; font-size:0.9rem;"></textarea>
+      </div>
+      <div class="form-row">
+        <label>Assume Role ARN (optional)</label>
+        <input type="text" id="parquet_tgt_assumeRoleArn" placeholder="arn:aws:iam::123456789:role/MyRole">
+      </div>
+      <div class="form-row">
+        <label>Session Name (optional)</label>
+        <input type="text" id="parquet_tgt_sessionName" placeholder="scylla-migrator">
+      </div>
+    </div>
+
     <!-- Target: Alternator -->
     <div id="target-alternator" class="section">
       <h3>Target - Alternator</h3>
@@ -539,6 +578,8 @@
       tgt_username: '', tgt_password: '',
       ddb_tgt_table: 'mytable', ddb_tgt_region: 'us-east-1',
       ddb_tgt_accessKey: '', ddb_tgt_secretKey: '', ddb_tgt_sessionToken: '', ddb_tgt_assumeRoleArn: '', ddb_tgt_sessionName: '',
+      parquet_tgt_path: 's3a://bucket/path', parquet_tgt_region: 'us-east-1', parquet_tgt_fileSizeMB: 128,
+      parquet_tgt_accessKey: '', parquet_tgt_secretKey: '', parquet_tgt_sessionToken: '', parquet_tgt_assumeRoleArn: '', parquet_tgt_sessionName: '',
       alt_tgt_table: 'mytable', alt_tgt_endpoint_host: 'http://scylla-node1:8000', alt_tgt_billingMode: '',
       alt_tgt_accessKey: '', alt_tgt_secretKey: '', alt_tgt_sessionToken: '', alt_tgt_assumeRoleArn: '', alt_tgt_sessionName: '',
       savepoints_path: '/app/savepoints', savepoints_interval: 300
@@ -635,7 +676,7 @@
     }
 
     const VALID_COMBOS = {
-      cassandra: ['scylla'],
+      cassandra: ['scylla', 'parquet'],
       parquet: ['scylla'],
       dynamodb: ['dynamodb', 'alternator'],
       alternator: ['dynamodb', 'alternator'],
@@ -790,6 +831,16 @@
   table: ${document.getElementById('tgt_table').value.trim()}
   consistencyLevel: ${document.querySelector('input[name="tgt_consistency"]:checked').value}
   stripTrailingZerosForDecimals: ${document.querySelector('input[name="tgt_stripZeros"]:checked').value}${creds}
+`;
+      } else if (tgt === 'parquet') {
+        const creds = buildAwsCreds('parquet_tgt_accessKey', 'parquet_tgt_secretKey', 'parquet_tgt_assumeRoleArn', 'parquet_tgt_sessionName', 'parquet_tgt_sessionToken', forEndpointChecks);
+        const region = document.getElementById('parquet_tgt_region').value.trim();
+        const regionLine = region ? `\n  region: ${region}` : '';
+        const fileSize = parseInt(document.getElementById('parquet_tgt_fileSizeMB').value || '128', 10) || 128;
+        yaml += `target:
+  type: parquet
+  path: ${document.getElementById('parquet_tgt_path').value.trim()}${regionLine}${creds}
+  fileSizeMB: ${fileSize}
 `;
       } else if (tgt === 'dynamodb') {
         const creds = buildAwsCreds('ddb_tgt_accessKey', 'ddb_tgt_secretKey', 'ddb_tgt_assumeRoleArn', 'ddb_tgt_sessionName', 'ddb_tgt_sessionToken', forEndpointChecks);

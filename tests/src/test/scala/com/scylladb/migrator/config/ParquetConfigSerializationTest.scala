@@ -5,6 +5,18 @@ import java.nio.charset.StandardCharsets
 
 class ParquetConfigSerializationTest extends munit.FunSuite {
 
+  test("cassandra to parquet fixture loads with parquet target settings") {
+    val config = MigratorConfig.loadFrom("src/test/configurations/cassandra-to-parquet-basic.yaml")
+
+    assert(config.source.isInstanceOf[SourceSettings.Cassandra])
+    assert(config.target.isInstanceOf[TargetSettings.Parquet])
+
+    val target = config.target.asInstanceOf[TargetSettings.Parquet]
+    assertEquals(target.path, "s3a://test-bucket/parquet-output/basictest")
+    assertEquals(target.region, Some("us-east-1"))
+    assertEquals(target.fileSizeMB, Some(128))
+  }
+
   test("skipParquetFiles serialization to YAML") {
     val config = MigratorConfig(
       source = SourceSettings.Parquet(

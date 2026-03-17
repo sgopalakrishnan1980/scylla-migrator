@@ -61,7 +61,7 @@ The following subsections detail the schema of each source type.
 Apache Cassandra Source
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-A source of type ``cassandra`` can be used together with a target of type ``cassandra`` only.
+A source of type ``cassandra`` can be used together with a target of type ``cassandra`` or ``parquet``.
 
 .. code-block:: yaml
 
@@ -91,8 +91,12 @@ A source of type ``cassandra`` can be used together with a target of type ``cass
     # Number of splits to use - this should be at minimum the amount of cores
     # available in the Spark cluster, and optimally more; higher splits will lead
     # to more fine-grained resumes. Aim for 8 * (Spark cores).
+    # Optional - if omitted for a Parquet target, the migrator derives a split count
+    # from the detected Scylla shard count and estimated source table size to target
+    # Parquet files around 128 MB.
     splitCount: 256
     # Number of connections to use to Apache Cassandra when copying
+    # Optional - if omitted, the migrator derives a default from the detected shard count.
     connections: 8
     # Number of rows to fetch in each read
     fetchSize: 1000
@@ -221,6 +225,7 @@ The ``target`` property describes the type of data to write. It must be an objec
 Valid values for the target ``type`` are:
 
 - ``cassandra`` for a CQL-compatible target (Apache Cassandra or ScyllaDB).
+- ``parquet`` for a Parquet dataset stored locally or on S3.
 - ``dynamodb`` for a DynamoDB-compatible target (DynamoDB or ScyllaDB Alternator).
 
 The following subsections detail the schema of each target type.
@@ -288,6 +293,27 @@ Apache Cassandra Target
 
 
 ^^^^^^^^^^^^^^^
+Parquet Target
+^^^^^^^^^^^^^^
+
+.. code-block:: yaml
+
+  target:
+    type: parquet
+    # Path of the output dataset. This can be a local path or an S3 path such as
+    # 's3a://some-bucket/path/to/output-directory'
+    path: <path>
+    # Optional - region to use when writing to S3.
+    region: <region>
+    # Optional - AWS credentials to use when writing to S3.
+    credentials:
+      # ... see the “AWS Authentication” section below
+    # Optional - target Parquet file size in MB. Exact file sizes are approximate in Spark.
+    # The migrator uses this value together with Scylla size estimates and shard count
+    # to derive a default split count when the source splitCount is not explicitly set.
+    fileSizeMB: 128
+
+^^^^^^^^^^^^^^^
 DynamoDB Target
 ^^^^^^^^^^^^^^^
 
@@ -333,7 +359,7 @@ The optional ``renames`` property lists the item columns to rename along the mig
 Savepoints
 ----------
 
-When migrating data from Apache Cassandra or DynamoDB, the migrator is able to :doc:`resume an interrupted migration </resume-interrupted-migration>`. To achieve this, it stores so-called “savepoints” along the process to remember which data items have already been migrated and should be skipped when the migration is restarted.
+When migrating data from Apache Cassandra / ScyllaDB or DynamoDB, the migrator is able to :doc:`resume an interrupted migration </resume-interrupted-migration>`. To achieve this, it stores so-called “savepoints” along the process to remember which data items have already been migrated and should be skipped when the migration is restarted.
 
 .. code-block:: yaml
 
@@ -372,7 +398,7 @@ The ``validation`` field and its properties are mandatory only when the applicat
 AWS Authentication
 ------------------
 
-When reading from DynamoDB or S3, or when writing to DynamoDB, the communication with AWS can be configured with the properties ``credentials``, ``endpoint``, and ``region`` in the configuration:
+When reading from DynamoDB or S3, or when writing to DynamoDB or S3, the communication with AWS can be configured with the properties ``credentials``, ``endpoint``, and ``region`` in the configuration:
 
 .. code-block:: yaml
 

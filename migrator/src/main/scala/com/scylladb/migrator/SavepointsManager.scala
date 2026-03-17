@@ -2,11 +2,10 @@ package com.scylladb.migrator
 
 import com.scylladb.migrator.config.MigratorConfig
 import org.apache.log4j.LogManager
-import sun.misc.{ Signal, SignalHandler }
 
 import java.nio.charset.StandardCharsets
-import java.nio.file.{ Files, Paths }
-import java.util.concurrent.{ ScheduledThreadPoolExecutor, TimeUnit }
+import java.nio.file.{Files, Paths}
+import java.util.concurrent.{ScheduledThreadPoolExecutor, TimeUnit}
 
 /**
   * A component that manages savepoints. Savepoints provide a way to resume an interrupted migration.
@@ -24,16 +23,15 @@ import java.util.concurrent.{ ScheduledThreadPoolExecutor, TimeUnit }
   * This class is abstract. Subclasses are responsible for implementing how to track the migration progress,
   * and for communicating the updated state of the migration via the method `updateConfigWithMigrationState`.
   */
-abstract class SavepointsManager(migratorConfig: MigratorConfig) extends AutoCloseable {
+abstract class SavepointsManager(migratorConfig: MigratorConfig)
+    extends AutoCloseable {
 
   val log = LogManager.getLogger(this.getClass.getName)
   private val scheduler = new ScheduledThreadPoolExecutor(1)
-  private var oldUsr2Handler: SignalHandler = _
-  private var oldTermHandler: SignalHandler = _
-  private var oldIntHandler: SignalHandler = _
+  private var signalRegistrations: Seq[SignalSupport.Registration] = Nil
 
   createSavepointsDirectory()
-  addUSR2Handler()
+  addSignalHandlers()
   startSavepointSchedule()
 
   private def createSavepointsDirectory(): Unit = {
@@ -48,20 +46,16 @@ abstract class SavepointsManager(migratorConfig: MigratorConfig) extends AutoClo
   private def savepointFilename(path: String): String =
     s"${path}/savepoint_${System.currentTimeMillis / 1000}.yaml"
 
-  private def addUSR2Handler(): Unit = {
+  private def addSignalHandlers(): Unit = {
     log.info(
       "Installing SIGINT/TERM/USR2 handler. Send this to dump the current progress to a savepoint.")
 
-    val handler = new SignalHandler {
-      override def handle(signal: Signal): Unit = {
-        dumpMigrationState(signal.toString)
-        sys.exit(0)
+    signalRegistrations =
+      SignalSupport.installHandlers(Seq("USR2", "TERM", "INT"), log) {
+        signalName =>
+          dumpMigrationState(signalName)
+          sys.exit(0)
       }
-    }
-
-    oldUsr2Handler = Signal.handle(new Signal("USR2"), handler)
-    oldTermHandler = Signal.handle(new Signal("TERM"), handler)
-    oldIntHandler = Signal.handle(new Signal("INT"), handler)
   }
 
   private def startSavepointSchedule(): Unit = {
@@ -70,18 +64,18 @@ abstract class SavepointsManager(migratorConfig: MigratorConfig) extends AutoClo
         try dumpMigrationState("schedule")
         catch {
           case e: Throwable =>
-            log.error("Could not create the savepoint. This will be retried.", e)
+            log.error("Could not create the savepoint. This will be retried.",
+                      e)
         }
     }
 
     log.info(
       s"Starting savepoint schedule; will write a savepoint every ${migratorConfig.savepoints.intervalSeconds} seconds")
 
-    scheduler.scheduleAtFixedRate(
-      runnable,
-      migratorConfig.savepoints.intervalSeconds,
-      migratorConfig.savepoints.intervalSeconds,
-      TimeUnit.SECONDS)
+    scheduler.scheduleAtFixedRate(runnable,
+                                  migratorConfig.savepoints.intervalSeconds,
+                                  migratorConfig.savepoints.intervalSeconds,
+                                  TimeUnit.SECONDS)
   }
 
   /**
@@ -95,7 +89,8 @@ abstract class SavepointsManager(migratorConfig: MigratorConfig) extends AutoClo
 
     val modifiedConfig = updateConfigWithMigrationState()
 
-    Files.write(filename, modifiedConfig.render.getBytes(StandardCharsets.UTF_8))
+    Files.write(filename,
+                modifiedConfig.render.getBytes(StandardCharsets.UTF_8))
 
     log.info(
       s"Created a savepoint config at ${filename} due to ${reason}. ${describeMigrationState()}")
@@ -106,9 +101,8 @@ abstract class SavepointsManager(migratorConfig: MigratorConfig) extends AutoClo
     */
   def close(): Unit = {
     scheduler.shutdown()
-    Signal.handle(new Signal("USR2"), oldUsr2Handler)
-    Signal.handle(new Signal("TERM"), oldTermHandler)
-    Signal.handle(new Signal("INT"), oldIntHandler)
+    signalRegistrations.foreach(_.restore())
+    signalRegistrations = Nil
   }
 
   /**

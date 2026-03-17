@@ -1,0 +1,23 @@
+source:
+  type: cassandra
+  host: cassandra
+  port: 9042
+  localDC: datacenter1
+  credentials:
+    username: dummy
+    password: dummy
+  keyspace: test
+  table: basictest
+  consistencyLevel: LOCAL_QUORUM
+  preserveTimestamps: false
+  fetchSize: 1000
+
+target:
+  type: parquet
+  path: s3a://test-bucket/parquet-output/basictest
+  region: us-east-1
+  fileSizeMB: 128
+
+savepoints:
+  path: /app/savepoints
+  intervalSeconds: 300

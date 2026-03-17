@@ -2,7 +2,7 @@
 Resume an Interrupted Migration Where it Left Off
 =================================================
 
-.. note:: This feature is currently supported only when migrating from Apache Cassandra or DynamoDB.
+.. note:: This feature is currently supported when migrating from Apache Cassandra / ScyllaDB or DynamoDB. For Cassandra / ScyllaDB sources, savepoints track completed token ranges and can be reused for both CQL targets and Parquet targets.
 
 If, for some reason, the migration is interrupted (e.g., because of a networking issue, or if you need to manually stop it for some reason), the migrator is able to resume it from a “savepoints”.
 

@@ -444,6 +444,16 @@ def parse_config():
         form["alt_tgt_billingMode"] = target.get("billingMode", "PAY_PER_REQUEST")
         form["alt_tgt_streamChanges"] = str(target.get("streamChanges", False)).lower()
         form["alt_tgt_skipInitialSnapshotTransfer"] = str(target.get("skipInitialSnapshotTransfer", False)).lower()
+    elif tgt_type == "parquet":
+        form["parquet_tgt_path"] = target.get("path", "")
+        form["parquet_tgt_region"] = target.get("region", "")
+        form["parquet_tgt_fileSizeMB"] = target.get("fileSizeMB", 128)
+        creds = target.get("credentials") or {}
+        form["parquet_tgt_accessKey"] = creds.get("accessKey", "")
+        form["parquet_tgt_secretKey"] = creds.get("secretKey", "")
+        assume = creds.get("assumeRole") or {}
+        form["parquet_tgt_assumeRoleArn"] = assume.get("arn", "")
+        form["parquet_tgt_sessionName"] = assume.get("sessionName", "")
 
     form["savepoints_path"] = savepoints.get("path", "/app/savepoints")
     form["savepoints_interval"] = savepoints.get("intervalSeconds", 300)
@@ -800,25 +810,28 @@ def _test_s3_aws_access(
 
 
 def _test_s3_path_access(path: str, creds: dict, assume_role: dict = None, region: str = None) -> tuple[bool, str]:
-    """Test S3 path (s3a://bucket/prefix) access with IAM credentials."""
+    """Test S3 path (s3a://bucket/prefix) access with IAM credentials or default credential chain."""
     path = path.replace("s3a://", "s3://")
     if not path.startswith("s3://"):
         return False, "Not an S3 path"
     parts = path[5:].strip("/").split("/", 1)
     bucket = parts[0]
     key = parts[1] if len(parts) > 1 else ""
-    ok, msg, session = _get_aws_credentials(creds, assume_role)
-    if not ok:
-        return False, msg
     try:
         import boto3
         from botocore.exceptions import ClientError
 
-        client = session.client("s3", region_name=region or "us-east-1")
+        if creds.get("accessKey") and creds.get("secretKey"):
+            ok, msg, session = _get_aws_credentials(creds, assume_role)
+            if not ok:
+                return False, msg
+            client = session.client("s3", region_name=region or "us-east-1")
+        else:
+            client = boto3.client("s3", region_name=region or "us-east-1")
         client.head_bucket(Bucket=bucket)
         if key:
             client.list_objects_v2(Bucket=bucket, Prefix=key, MaxKeys=1)
-        return True, "S3 path access and IAM credentials OK"
+        return True, "S3 path access OK"
     except ClientError as e:
         code = e.response.get("Error", {}).get("Code", "")
         msg = e.response.get("Error", {}).get("Message", str(e))
@@ -1003,6 +1016,26 @@ def test_access():
             target_result["ok"] = ok
             target_result["message"] = msg
             results["target"] = target_result
+            if not ok:
+                results["success"] = False
+    elif tgt_type == "parquet":
+        path = target.get("path", "")
+        creds = target.get("credentials", {}) or {}
+        assume_role = (creds.get("assumeRole") or {}) if isinstance(creds.get("assumeRole"), dict) else None
+        region = target.get("region", "us-east-1")
+        if path.startswith("s3a://") or path.startswith("s3://"):
+            ok, msg = _test_s3_path_access(path, creds, assume_role, region)
+            results["target"] = {"ok": ok, "message": msg, "type": "parquet"}
+            if not ok:
+                results["success"] = False
+        else:
+            parent = Path(path).parent if path else None
+            ok = bool(parent) and parent.exists()
+            results["target"] = {
+                "ok": ok,
+                "message": "Local parent path exists" if ok else "Local parent path not found",
+                "type": "parquet",
+            }
             if not ok:
                 results["success"] = False
 
@@ -1295,6 +1328,26 @@ def _test_access_impl(cfg: dict) -> dict:
             target_result["ok"] = ok
             target_result["message"] = msg
             results["target"] = target_result
+            if not ok:
+                results["success"] = False
+    elif tgt_type == "parquet":
+        path = target.get("path", "")
+        creds = target.get("credentials", {}) or {}
+        assume_role = (creds.get("assumeRole") or {}) if isinstance(creds.get("assumeRole"), dict) else None
+        region = target.get("region", "us-east-1")
+        if path.startswith("s3a://") or path.startswith("s3://"):
+            ok, msg = _test_s3_path_access(path, creds, assume_role, region)
+            results["target"] = {"ok": ok, "message": msg, "type": "parquet"}
+            if not ok:
+                results["success"] = False
+        else:
+            parent = Path(path).parent if path else None
+            ok = bool(parent) and parent.exists()
+            results["target"] = {
+                "ok": ok,
+                "message": "Local parent path exists" if ok else "Local parent path not found",
+                "type": "parquet",
+            }
             if not ok:
                 results["success"] = False
 

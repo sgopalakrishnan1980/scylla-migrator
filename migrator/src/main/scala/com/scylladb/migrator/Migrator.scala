@@ -3,7 +3,7 @@ package com.scylladb.migrator
 import com.scylladb.migrator.alternator.AlternatorMigrator
 import com.scylladb.migrator.config._
 import com.scylladb.migrator.scylla.ScyllaMigrator
-import org.apache.log4j.{ Level, LogManager, Logger }
+import org.apache.log4j.{Level, LogManager, Logger}
 import org.apache.spark.sql._
 
 object Migrator {
@@ -20,8 +20,12 @@ object Migrator {
 
     Logger.getRootLogger.setLevel(Level.WARN)
     log.setLevel(Level.INFO)
-    Logger.getLogger("org.apache.spark.scheduler.TaskSetManager").setLevel(Level.WARN)
-    Logger.getLogger("com.datastax.spark.connector.cql.CassandraConnector").setLevel(Level.WARN)
+    Logger
+      .getLogger("org.apache.spark.scheduler.TaskSetManager")
+      .setLevel(Level.WARN)
+    Logger
+      .getLogger("com.datastax.spark.connector.cql.CassandraConnector")
+      .setLevel(Level.WARN)
 
     log.info(s"ScyllaDB Migrator ${BuildInfo.version}")
 
@@ -31,7 +35,8 @@ object Migrator {
       MigratorConfig.loadFromPath(configPath) match {
         case Right(cfg) =>
           log.info("Config validation successful.")
-          log.info(s"Source: ${cfg.source.getClass.getSimpleName}, Target: ${cfg.target.getClass.getSimpleName}")
+          log.info(
+            s"Source: ${cfg.source.getClass.getSimpleName}, Target: ${cfg.target.getClass.getSimpleName}")
           spark.stop()
           return
         case Left(err) =>
@@ -47,21 +52,41 @@ object Migrator {
 
     try {
       (migratorConfig.source, migratorConfig.target) match {
-        case (cassandraSource: SourceSettings.Cassandra, scyllaTarget: TargetSettings.Scylla) =>
+        case (cassandraSource: SourceSettings.Cassandra,
+              scyllaTarget: TargetSettings.Scylla) =>
           val sourceDF = readers.Cassandra.readDataframe(
             spark,
             cassandraSource,
             cassandraSource.preserveTimestamps,
             migratorConfig.getSkipTokenRangesOrEmptySet)
           ScyllaMigrator.migrate(migratorConfig, scyllaTarget, sourceDF)
-        case (parquetSource: SourceSettings.Parquet, scyllaTarget: TargetSettings.Scylla) =>
-          readers.Parquet.migrateToScylla(migratorConfig, parquetSource, scyllaTarget)(spark)
-        case (dynamoSource: SourceSettings.DynamoDB, alternatorTarget: TargetSettings.DynamoDB) =>
-          AlternatorMigrator.migrateFromDynamoDB(dynamoSource, alternatorTarget, migratorConfig)
-        case (
-            s3Source: SourceSettings.DynamoDBS3Export,
-            alternatorTarget: TargetSettings.DynamoDB) =>
-          AlternatorMigrator.migrateFromS3Export(s3Source, alternatorTarget, migratorConfig)
+        case (cassandraSource: SourceSettings.Cassandra,
+              parquetTarget: TargetSettings.Parquet) =>
+          val sourceDF = readers.Cassandra.readDataframe(
+            spark,
+            cassandraSource,
+            cassandraSource.preserveTimestamps,
+            migratorConfig.getSkipTokenRangesOrEmptySet,
+            Some(parquetTarget.fileSizeMB.getOrElse(128)))
+          writers.Parquet.migrateFromCassandra(migratorConfig,
+                                               cassandraSource,
+                                               parquetTarget,
+                                               sourceDF)
+        case (parquetSource: SourceSettings.Parquet,
+              scyllaTarget: TargetSettings.Scylla) =>
+          readers.Parquet.migrateToScylla(migratorConfig,
+                                          parquetSource,
+                                          scyllaTarget)(spark)
+        case (dynamoSource: SourceSettings.DynamoDB,
+              alternatorTarget: TargetSettings.DynamoDB) =>
+          AlternatorMigrator.migrateFromDynamoDB(dynamoSource,
+                                                 alternatorTarget,
+                                                 migratorConfig)
+        case (s3Source: SourceSettings.DynamoDBS3Export,
+              alternatorTarget: TargetSettings.DynamoDB) =>
+          AlternatorMigrator.migrateFromS3Export(s3Source,
+                                                 alternatorTarget,
+                                                 migratorConfig)
         case _ =>
           sys.error("Unsupported combination of source and target.")
       }

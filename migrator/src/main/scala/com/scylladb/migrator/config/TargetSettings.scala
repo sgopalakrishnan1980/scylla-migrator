@@ -2,8 +2,8 @@ package com.scylladb.migrator.config
 
 import cats.implicits._
 import com.scylladb.migrator.AwsUtils
-import io.circe.{ Decoder, DecodingFailure, Encoder, Json }
-import io.circe.generic.semiauto.{ deriveDecoder, deriveEncoder }
+import io.circe.{Decoder, DecodingFailure, Encoder, Json}
+import io.circe.generic.semiauto.{deriveDecoder, deriveEncoder}
 import io.circe.syntax._
 import software.amazon.awssdk.services.dynamodb.model.BillingMode
 import com.scylladb.migrator.config.BillingModeCodec._
@@ -39,6 +39,15 @@ object TargetSettings {
       AwsUtils.computeFinalCredentials(credentials, endpoint, region)
   }
 
+  case class Parquet(path: String,
+                     region: Option[String],
+                     credentials: Option[AWSCredentials],
+                     fileSizeMB: Option[Int])
+      extends TargetSettings {
+    lazy val finalCredentials: Option[com.scylladb.migrator.AWSCredentials] =
+      AwsUtils.computeFinalCredentials(credentials, None, region)
+  }
+
   implicit val decoder: Decoder[TargetSettings] =
     Decoder.instance { cursor =>
       cursor.get[String]("type").flatMap {
@@ -46,17 +55,33 @@ object TargetSettings {
           deriveDecoder[Scylla].apply(cursor)
         case "dynamodb" | "dynamo" =>
           deriveDecoder[DynamoDB].apply(cursor)
+        case "parquet" =>
+          deriveDecoder[Parquet].apply(cursor)
         case otherwise =>
-          Left(DecodingFailure(s"Invalid target type: ${otherwise}", cursor.history))
+          Left(
+            DecodingFailure(s"Invalid target type: ${otherwise}",
+                            cursor.history))
       }
     }
 
   implicit val encoder: Encoder[TargetSettings] =
     Encoder.instance {
       case t: Scylla =>
-        deriveEncoder[Scylla].encodeObject(t).add("type", Json.fromString("scylla")).asJson
+        deriveEncoder[Scylla]
+          .encodeObject(t)
+          .add("type", Json.fromString("scylla"))
+          .asJson
 
       case t: DynamoDB =>
-        deriveEncoder[DynamoDB].encodeObject(t).add("type", Json.fromString("dynamodb")).asJson
+        deriveEncoder[DynamoDB]
+          .encodeObject(t)
+          .add("type", Json.fromString("dynamodb"))
+          .asJson
+
+      case t: Parquet =>
+        deriveEncoder[Parquet]
+          .encodeObject(t)
+          .add("type", Json.fromString("parquet"))
+          .asJson
     }
 }

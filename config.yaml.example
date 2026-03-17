@@ -36,8 +36,11 @@ source:
   # Number of splits to use - this should be at minimum the amount of cores
   # available in the Spark cluster, and optimally more; higher splits will lead
   # to more fine-grained resumes. Aim for 8 * (Spark cores).
+  # If omitted for a Parquet target, the migrator derives a split count from the
+  # detected Scylla shard count and the estimated table size to target ~128MB files.
   splitCount: 256
   # Number of connections to use to Cassandra when copying
+  # If omitted, the migrator derives a default based on the detected shard count.
   connections: 8
   # Number of rows to fetch in each read
   fetchSize: 1000
@@ -254,9 +257,29 @@ target:
 #   # This setting is ignored if streamChanges is false.
 #   #skipInitialSnapshotTransfer: false
 
+# Example for loading into an S3 Parquet target:
+# target:
+#   type: parquet
+#   path: s3a://bucket-name/path/to/output-directory
+#   # Optional - specify the region:
+#   region: <region>
+#   # Optional - AWS access/secret key for writing to S3.
+#   # This section can be left out if running on EC2 instances that have instance profiles with the
+#   # appropriate permissions.
+#   credentials:
+#     accessKey: <user>
+#     secretKey: <pass>
+#     # Optional - assume role
+#     assumeRole:
+#       arn: <roleArn>
+#       sessionName: <roleSessionName>
+#   # Optional - target Parquet file size in MB. Exact file size is approximate in Spark.
+#   # The migrator uses this together with Scylla size estimates and shard count to tune splits.
+#   fileSizeMB: 128
+
 # Savepoints are configuration files (like this one), saved by the migrator as it
 # runs. Their purpose is to skip token ranges that have already been copied. This
-# configuration only applies when copying from Cassandra/Scylla.
+# configuration applies when copying from Cassandra/Scylla, including Cassandra/Scylla -> Parquet.
 savepoints:
   # Where should savepoint configurations be stored? This is a path on the host running
   # the Spark driver - usually the Spark master.

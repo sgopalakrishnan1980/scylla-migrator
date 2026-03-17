@@ -1,6 +1,6 @@
 # ScyllaDB Migrator (Fork)
 
-This is a **fork** of the [ScyllaDB Migrator](https://github.com/scylladb/scylla-migrator) by ScyllaDB. The ScyllaDB Migrator is a Spark application that migrates data to ScyllaDB from CQL-compatible or DynamoDB-compatible databases.
+This is a **fork** of the [ScyllaDB Migrator](https://github.com/scylladb/scylla-migrator) by ScyllaDB. The ScyllaDB Migrator is a Spark application that migrates data from CQL-compatible, DynamoDB-compatible, and Parquet datasets to ScyllaDB, DynamoDB-compatible targets, or S3 Parquet output.
 
 > **Original repository:** https://github.com/scylladb/scylla-migrator
 
